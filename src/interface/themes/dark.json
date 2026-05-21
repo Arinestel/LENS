@@ -1,0 +1,137 @@
+{
+  "name": "dark",
+  "colors": {
+    "window_background": {
+      "r": 0.06,
+      "g": 0.065,
+      "b": 0.075,
+      "a": 1.0
+    },
+    "left_panel_background": {
+      "r": 0.09,
+      "g": 0.095,
+      "b": 0.11,
+      "a": 1.0
+    },
+    "logs_background": {
+      "r": 0.075,
+      "g": 0.08,
+      "b": 0.09,
+      "a": 1.0
+    },
+    "logs_text_color": {
+      "r": 0.8,
+      "g": 0.1,
+      "b": 0.1,
+      "a": 1.0
+    },
+    "dialogue_background": {
+      "r": 0.065,
+      "g": 0.07,
+      "b": 0.08,
+      "a": 1.0
+    },
+    "dialogue_text_color": {
+      "r": 0.88,
+      "g": 0.89,
+      "b": 0.92,
+      "a": 1.0
+    },
+    "dialogue_user_nickname_color": {
+      "r": 0.36,
+      "g": 0.62,
+      "b": 0.9,
+      "a": 1.0
+    },
+    "dialogue_lens_nickname_color": {
+      "r": 0.66,
+      "g": 0.69,
+      "b": 0.74,
+      "a": 1.0
+    },
+    "input_background": {
+      "r": 0.1,
+      "g": 0.105,
+      "b": 0.12,
+      "a": 1.0
+    },
+    "input_text_color": {
+      "r": 0.9,
+      "g": 0.91,
+      "b": 0.94,
+      "a": 1.0
+    },
+    "button_normal_background": {
+      "r": 0.15,
+      "g": 0.17,
+      "b": 0.2,
+      "a": 1.0
+    },
+    "button_hover_background": {
+      "r": 0.18,
+      "g": 0.25,
+      "b": 0.32,
+      "a": 1.0
+    },
+    "button_active_background": {
+      "r": 0.12,
+      "g": 0.34,
+      "b": 0.55,
+      "a": 1.0
+    },
+    "button_text_normal_color": {
+      "r": 0.86,
+      "g": 0.88,
+      "b": 0.91,
+      "a": 1.0
+    },
+    "button_text_hover_color": {
+      "r": 0.95,
+      "g": 0.97,
+      "b": 1.0,
+      "a": 1.0
+    },
+    "button_text_active_color": {
+      "r": 1.0,
+      "g": 1.0,
+      "b": 1.0,
+      "a": 1.0
+    },
+    "menu_background": {
+      "r": 0.15,
+      "g": 0.17,
+      "b": 0.2,
+      "a": 1.0
+    },
+    "menu_hover_background": {
+      "r": 0.575,
+      "g": 0.585,
+      "b": 0.6,
+      "a": 1.0
+    },
+    "menu_border": {
+      "r": 0.18,
+      "g": 0.2,
+      "b": 0.105,
+      "a": 1.0
+    },
+    "primary_text_color": {
+      "r": 0.92,
+      "g": 0.93,
+      "b": 0.96,
+      "a": 1.0
+    },
+    "secondary_text_color": {
+      "r": 0.6,
+      "g": 0.63,
+      "b": 0.68,
+      "a": 1.0
+    },
+    "separator_color": {
+      "r": 0.18,
+      "g": 0.2,
+      "b": 0.23,
+      "a": 1.0
+    }
+  }
+}

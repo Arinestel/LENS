@@ -1,0 +1,45 @@
+{
+    "metadata":  {
+                     "language_code":  "uk",
+                     "language_name":  "Українська",
+                     "default_font":  "Times New Roman",
+                     "default_font_size":  14,
+                     "version":  "1.0"
+                 },
+    "ui":  {
+               "button_send":  "Надіслати",
+               "button_settings":  "Налаштування",
+               "button_close":  "Закрити",
+               "button_apply":  "Застосувати",
+               "button_cancel":  "Скасувати",
+               "placeholder_input":  "Введіть запит",
+               "label_dialogue":  "Діалог",
+               "label_settings":  "Панель керування",
+               "label_logs":  "Логи"
+           },
+    "settings":  {
+                     "option_reasoning_model":  "Розумова",
+                     "option_language_model":  "Мовна",
+                     "section_ai_models":  "ШІ моделі",
+                     "section_messages":  "Повідомлення",
+                     "option_input":  "Ввід",
+                     "option_enter":  "Enter",
+                     "option_enter_ctrl":  "Enter+Ctrl",
+                     "title":  "Параметри",
+                     "section_language":  "Мова",
+                     "section_theme":  "Тема",
+                     "section_fonts":  "Шрифт",
+                     "option_light":  "Світла",
+                     "option_dark":  "Темна",
+                     "option_custom":  "Користувацька",
+                     "option_font_add":  "Додати",
+                     "label_font_name":  "Шрифт",
+                     "label_font_size":  "Розмір"
+                 },
+    "messages":  {
+                     "status_initializing":  "Ініціалізація",
+                     "status_ready":  "Готово",
+                     "status_processing":  "Обробка",
+                     "status_complete":  "Завершено"
+                 }
+}

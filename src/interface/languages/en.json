@@ -1,0 +1,45 @@
+{
+    "metadata":  {
+                     "language_code":  "en",
+                     "language_name":  "English",
+                     "default_font":  "Times New Roman",
+                     "default_font_size":  14,
+                     "version":  "1.0"
+                 },
+    "ui":  {
+               "button_send":  "Send",
+               "button_settings":  "Settings",
+               "button_close":  "Close",
+               "button_apply":  "Apply",
+               "button_cancel":  "Cancel",
+               "placeholder_input":  "Enter query",
+               "label_dialogue":  "Dialogue",
+               "label_settings":  "Settings",
+               "label_logs":  "Logs"
+           },
+    "settings":  {
+                     "title":  "Settings",
+                     "section_language":  "Language",
+                     "section_theme":  "Theme",
+                     "section_fonts":  "Fonts",
+                     "section_ai_models":  "AI Models",
+                     "option_reasoning_model":  "Reasoning",
+                     "option_language_model":  "Language",
+                     "section_messages":  "Messages",
+                     "option_input":  "Input",
+                     "option_enter":  "Enter",
+                     "option_enter_ctrl":  "Enter+Ctrl",
+                     "option_light":  "Light",
+                     "option_dark":  "Dark",
+                     "option_custom":  "Custom",
+                     "option_font_add":  "Add",
+                     "label_font_name":  "Font",
+                     "label_font_size":  "Size"
+                 },
+    "messages":  {
+                     "status_initializing":  "Initializing",
+                     "status_ready":  "Ready",
+                     "status_processing":  "Processing",
+                     "status_complete":  "Complete"
+                 }
+}

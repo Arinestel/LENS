@@ -1,0 +1,220 @@
+{
+  "current": {
+    "colors": {
+      "button_active_background": {
+        "a": 1.0,
+        "b": 0.550000011920929,
+        "g": 0.3400000035762787,
+        "r": 0.119999997317791
+      },
+      "button_hover_background": {
+        "a": 1.0,
+        "b": 0.3199999928474426,
+        "g": 0.25,
+        "r": 0.18000000715255737
+      },
+      "button_normal_background": {
+        "a": 1.0,
+        "b": 0.20000000298023224,
+        "g": 0.17000000178813934,
+        "r": 0.15000000596046448
+      },
+      "button_text_active_color": {
+        "a": 1.0,
+        "b": 1.0,
+        "g": 1.0,
+        "r": 1.0
+      },
+      "button_text_hover_color": {
+        "a": 1.0,
+        "b": 1.0,
+        "g": 0.9700000286102296,
+        "r": 0.949999988079071
+      },
+      "button_text_normal_color": {
+        "a": 1.0,
+        "b": 0.9100000262260436,
+        "g": 0.8799999952316284,
+        "r": 0.8600000143051147
+      },
+      "dialogue_background": {
+        "a": 1.0,
+        "b": 0.07999999821186066,
+        "g": 0.07000000029802322,
+        "r": 0.06499999761581421
+      },
+      "dialogue_lens_nickname_color": {
+        "a": 1.0,
+        "b": 0.7400000095367432,
+        "g": 0.6899999976158142,
+        "r": 0.6600000262260437
+      },
+      "dialogue_text_color": {
+        "a": 1.0,
+        "b": 0.9200000166893004,
+        "g": 0.8899999856948853,
+        "r": 0.8799999952316284
+      },
+      "dialogue_user_nickname_color": {
+        "a": 1.0,
+        "b": 0.8999999761581421,
+        "g": 0.6200000047683716,
+        "r": 0.36000001430511475
+      },
+      "input_background": {
+        "a": 1.0,
+        "b": 0.119999997317791,
+        "g": 0.10499999672174454,
+        "r": 0.10000000149011612
+      },
+      "input_text_color": {
+        "a": 1.0,
+        "b": 0.9399999976158142,
+        "g": 0.9100000262260436,
+        "r": 0.8999999761581421
+      },
+      "left_panel_background": {
+        "a": 1.0,
+        "b": 0.10999999940395357,
+        "g": 0.0949999988079071,
+        "r": 0.09000000357627869
+      },
+      "logs_background": {
+        "a": 1.0,
+        "b": 0.09000000357627869,
+        "g": 0.07999999821186066,
+        "r": 0.07500000298023224
+      },
+      "logs_text_color": {
+        "a": 1.0,
+        "b": 0.10000000149011612,
+        "g": 0.10000000149011612,
+        "r": 0.800000011920929
+      },
+      "menu_background": {
+        "a": 1.0,
+        "b": 0.20000000298023224,
+        "g": 0.17000000178813934,
+        "r": 0.15000000596046448
+      },
+      "menu_border": {
+        "a": 1.0,
+        "b": 0.10499999672174454,
+        "g": 0.20000000298023224,
+        "r": 0.18000000715255737
+      },
+      "menu_hover_background": {
+        "a": 1.0,
+        "b": 0.6000000238418579,
+        "g": 0.5849999785423279,
+        "r": 0.574999988079071
+      },
+      "primary_text_color": {
+        "a": 1.0,
+        "b": 0.959999978542328,
+        "g": 0.9300000071525574,
+        "r": 0.9200000166893004
+      },
+      "secondary_text_color": {
+        "a": 1.0,
+        "b": 0.6800000071525574,
+        "g": 0.6299999952316284,
+        "r": 0.6000000238418579
+      },
+      "separator_color": {
+        "a": 1.0,
+        "b": 0.2300000041723251,
+        "g": 0.20000000298023224,
+        "r": 0.18000000715255737
+      },
+      "window_background": {
+        "a": 1.0,
+        "b": 0.07500000298023224,
+        "g": 0.06499999761581421,
+        "r": 0.05999999865889549
+      }
+    },
+    "font_name": "Times New Roman",
+    "font_size": 14,
+    "language": "uk",
+    "strings": {
+      "messages.status_complete": "Завершено",
+      "messages.status_initializing": "Ініціалізація",
+      "messages.status_processing": "Обробка",
+      "messages.status_ready": "Готово",
+      "metadata.default_font": "Times New Roman",
+      "metadata.language_code": "uk",
+      "metadata.language_name": "Українська",
+      "metadata.version": "1.0",
+      "settings.label_font_name": "Шрифт",
+      "settings.label_font_size": "Розмір",
+      "settings.option_custom": "Користувацька",
+      "settings.option_dark": "Темна",
+      "settings.option_enter": "Enter",
+      "settings.option_enter_ctrl": "Enter+Ctrl",
+      "settings.option_font_add": "Додати",
+      "settings.option_input": "Ввід",
+      "settings.option_language_model": "Мовна",
+      "settings.option_light": "Світла",
+      "settings.option_reasoning_model": "Розумова",
+      "settings.section_ai_models": "ШІ моделі",
+      "settings.section_fonts": "Шрифт",
+      "settings.section_language": "Мова",
+      "settings.section_messages": "Повідомлення",
+      "settings.section_theme": "Тема",
+      "settings.title": "Параметри",
+      "ui.button_apply": "Застосувати",
+      "ui.button_cancel": "Скасувати",
+      "ui.button_close": "Закрити",
+      "ui.button_send": "Надіслати",
+      "ui.button_settings": "Налаштування",
+      "ui.label_dialogue": "Діалог",
+      "ui.label_logs": "Логи",
+      "ui.label_settings": "Панель керування",
+      "ui.placeholder_input": "Введіть запит"
+    },
+    "theme": "dark"
+  },
+  "metadata": {
+    "available_languages": [
+      {
+        "code": "en",
+        "default_font": "Times New Roman",
+        "default_font_size": 14,
+        "language_name": "English"
+      },
+      {
+        "code": "uk",
+        "default_font": "Times New Roman",
+        "default_font_size": 14,
+        "language_name": "Українська"
+      }
+    ],
+    "available_themes": [
+      {
+        "fallback_label": "Light",
+        "key": "light",
+        "label_key": "settings.option_light"
+      },
+      {
+        "fallback_label": "Dark",
+        "key": "dark",
+        "label_key": "settings.option_dark"
+      },
+      {
+        "fallback_label": "Custom",
+        "key": "custom",
+        "label_key": "settings.option_custom"
+      }
+    ],
+    "default_font": "Times New Roman",
+    "default_font_size": 14,
+    "default_language": "en",
+    "default_theme": "light",
+    "description": "Local UI state for LENS Desktop Shell v0. Runtime UI reads current values from this file.",
+    "font_size_range": {
+      "max": 24,
+      "min": 12
+    }
+  }
+}
