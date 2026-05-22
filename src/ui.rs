@@ -1,4 +1,4 @@
-﻿// Модуль інтерфейсу користувача для LENS Desktop Shell v0.
+// Модуль інтерфейсу користувача для LENS Desktop Shell v0.
 // Основна роль: побудова головного вікна, обробка натискань кнопок
 // та показ діалогової області, логів і меню налаштувань.
 //
@@ -15,16 +15,52 @@ use iced::{
 };
 
 use std::collections::HashMap;
+use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::core::core_gateway::{CoreGateway, UiCoreRequest};
+use crate::core::core_logger::CoreLogger;
+use crate::core::core_runtime_config::CoreRuntimeConfig;
+use crate::core::orchestrator::CoreOrchestrator;
+use crate::core::real_reasoning_config::RealReasoningConfig;
+use crate::core::reasoning_contract::ReasoningResult;
+use crate::core::reasoning_readiness::ReasoningReadinessStatus;
 use crate::interface::interface_manager::{InterfaceManager, InterfaceSettings};
 use crate::interface::localization::LanguageMetadata;
 use crate::logging::Logger;
 use crate::orchestrator;
+use crate::server_control::{
+    check_server_one_model_status, check_server_one_status, start_server_one_if_needed,
+    ServerOneModelStatus, ServerOneStatus,
+};
 use crate::state::{AppState, State};
+
+#[cfg(target_os = "windows")]
+const WINDOWS_VIRTUAL_KEY_V: i32 = 0x56;
+
+#[cfg(target_os = "windows")]
+#[link(name = "user32")]
+extern "system" {
+    fn GetAsyncKeyState(v_key: i32) -> i16;
+}
+
+fn is_paste_shortcut(key: keyboard::Key<&str>, modifiers: keyboard::Modifiers) -> bool {
+    modifiers.control()
+        && (matches!(key, keyboard::Key::Character("v" | "V")) || is_physical_paste_key_pressed())
+}
+
+#[cfg(target_os = "windows")]
+fn is_physical_paste_key_pressed() -> bool {
+    unsafe { (GetAsyncKeyState(WINDOWS_VIRTUAL_KEY_V) as u16 & 0x8000) != 0 }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_physical_paste_key_pressed() -> bool {
+    false
+}
 
 // Базові розміри UI тримаються тут, щоб макет лишався передбачуваним.
 const DEFAULT_UI_FONT_SIZE: u16 = 14;
@@ -39,6 +75,8 @@ const INPUT_VERTICAL_PADDING: f32 = 6.0;
 
 const INPUT_VISIBLE_LINES: f32 = 3.0;
 
+const CONTROL_SEPARATOR_VERTICAL_PADDING: f32 = 5.0;
+
 // Накладне меню прив'язується до кнопки без зміни геометрії основного вікна.
 const MENU_HORIZONTAL_ATTACH_RATIO: f32 = 0.85;
 const MENU_VERTICAL_ATTACH_RATIO: f32 = 0.3;
@@ -50,11 +88,19 @@ const SETTINGS_FONT_SUBMENU_CLOSE_DELAY_MS: u64 = 250;
 const SETTINGS_AI_MODELS_SUBMENU_CLOSE_DELAY_MS: u64 = 250;
 const SETTINGS_MESSAGES_SUBMENU_CLOSE_DELAY_MS: u64 = 250;
 const SETTINGS_INPUT_SUBMENU_CLOSE_DELAY_MS: u64 = 250;
+const DEBUG_MENU_CLOSE_DELAY_MS: u64 = 250;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InputSubmitShortcut {
     Enter,
     EnterCtrl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelIndicatorState {
+    Empty,
+    ConfiguredDisconnected,
+    Connected,
 }
 
 impl InputSubmitShortcut {
@@ -119,6 +165,15 @@ struct UiThemeColors {
     primary_text_color: UiColorRgba,
     secondary_text_color: UiColorRgba,
     separator_color: UiColorRgba,
+    server_one_button_running_background: UiColorRgba,
+    server_one_button_running_hover_background: UiColorRgba,
+    server_one_button_running_active_background: UiColorRgba,
+    server_one_button_not_running_background: UiColorRgba,
+    server_one_button_not_running_hover_background: UiColorRgba,
+    server_one_button_not_running_active_background: UiColorRgba,
+    server_one_button_text_color: UiColorRgba,
+    server_one_indicator_idle_fill: UiColorRgba,
+    server_one_indicator_border: UiColorRgba,
 }
 
 // UiTheme поєднує назву теми і її палітру.
@@ -138,6 +193,12 @@ struct ThemedButtonStyle {
     hover_text: UiColorRgba,
     active_text: UiColorRgba,
     border_color: Option<UiColorRgba>,
+}
+
+#[derive(Debug, Clone)]
+struct ServerControlButtonStyle {
+    status: ServerOneStatus,
+    colors: UiThemeColors,
 }
 
 // ThemedMenuButtonStyle додає до кнопки стан, потрібний для пунктів меню.
@@ -183,6 +244,43 @@ impl ThemedButtonStyle {
                 color: border_color
                     .map(|color| color.to_iced_color())
                     .unwrap_or(Color::TRANSPARENT),
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        }
+    }
+}
+
+impl ServerControlButtonStyle {
+    fn new(status: ServerOneStatus, colors: &UiThemeColors) -> Self {
+        Self {
+            status,
+            colors: colors.clone(),
+        }
+    }
+
+    fn colors(&self) -> (UiColorRgba, UiColorRgba, UiColorRgba) {
+        match self.status {
+            ServerOneStatus::Running => (
+                self.colors.server_one_button_running_background,
+                self.colors.server_one_button_running_hover_background,
+                self.colors.server_one_button_running_active_background,
+            ),
+            ServerOneStatus::NotRunning => (
+                self.colors.server_one_button_not_running_background,
+                self.colors.server_one_button_not_running_hover_background,
+                self.colors.server_one_button_not_running_active_background,
+            ),
+        }
+    }
+
+    fn appearance(&self, background: UiColorRgba) -> iced::widget::button::Appearance {
+        iced::widget::button::Appearance {
+            background: Some(Background::Color(background.to_iced_color())),
+            text_color: self.colors.server_one_button_text_color.to_iced_color(),
+            border: iced::Border {
+                width: 0.0,
+                color: Color::TRANSPARENT,
                 radius: 0.0.into(),
             },
             ..Default::default()
@@ -285,6 +383,25 @@ impl iced::widget::button::StyleSheet for ThemedButtonStyle {
     // Повертає вигляд кнопки під час натискання.
     fn pressed(&self, _style: &Self::Style) -> iced::widget::button::Appearance {
         Self::appearance(self.border_color, self.active_background, self.active_text)
+    }
+}
+
+impl iced::widget::button::StyleSheet for ServerControlButtonStyle {
+    type Style = Theme;
+
+    fn active(&self, _style: &Self::Style) -> iced::widget::button::Appearance {
+        let (normal, _, _) = self.colors();
+        self.appearance(normal)
+    }
+
+    fn hovered(&self, _style: &Self::Style) -> iced::widget::button::Appearance {
+        let (_, hover, _) = self.colors();
+        self.appearance(hover)
+    }
+
+    fn pressed(&self, _style: &Self::Style) -> iced::widget::button::Appearance {
+        let (_, _, active) = self.colors();
+        self.appearance(active)
     }
 }
 
@@ -494,6 +611,21 @@ impl UiTheme {
                 primary_text_color: UiColorRgba::new(0.1, 0.1, 0.1, 1.0),
                 secondary_text_color: UiColorRgba::new(0.5, 0.5, 0.5, 1.0),
                 separator_color: UiColorRgba::new(0.8, 0.8, 0.8, 1.0),
+                server_one_button_running_background: UiColorRgba::new(0.08, 0.46, 0.18, 1.0),
+                server_one_button_running_hover_background: UiColorRgba::new(0.10, 0.58, 0.23, 1.0),
+                server_one_button_running_active_background: UiColorRgba::new(
+                    0.05, 0.36, 0.13, 1.0,
+                ),
+                server_one_button_not_running_background: UiColorRgba::new(0.66, 0.10, 0.10, 1.0),
+                server_one_button_not_running_hover_background: UiColorRgba::new(
+                    0.78, 0.13, 0.13, 1.0,
+                ),
+                server_one_button_not_running_active_background: UiColorRgba::new(
+                    0.50, 0.07, 0.07, 1.0,
+                ),
+                server_one_button_text_color: UiColorRgba::new(1.0, 1.0, 1.0, 1.0),
+                server_one_indicator_idle_fill: UiColorRgba::new(0.45, 0.45, 0.45, 1.0),
+                server_one_indicator_border: UiColorRgba::new(0.02, 0.08, 0.22, 1.0),
             },
         }
     }
@@ -735,6 +867,51 @@ impl SettingsFirstMenuState {
 }
 
 // SettingsThemeSubmenuState керує підменю вибору теми.
+#[derive(Debug, Clone, Copy)]
+struct DebugMenuState {
+    node: LocalMenuNodeState,
+}
+
+impl DebugMenuState {
+    fn closed() -> Self {
+        DebugMenuState {
+            node: LocalMenuNodeState::closed(),
+        }
+    }
+
+    fn toggle_open(&mut self) {
+        self.node.toggle_open_from_parent();
+    }
+
+    fn open_from_parent_hover(&mut self, now: Instant) {
+        self.node.set_parent_active(true, now, &[], true);
+    }
+
+    fn close_now(&mut self) {
+        self.node.close_now();
+    }
+
+    fn is_open(&self) -> bool {
+        self.node.is_open()
+    }
+
+    fn has_pending_close(&self) -> bool {
+        self.node.has_pending_close()
+    }
+
+    fn set_parent_button_active(&mut self, active: bool, now: Instant) {
+        self.node.set_parent_active(active, now, &[], false);
+    }
+
+    fn set_menu_zone_active(&mut self, active: bool, now: Instant) {
+        self.node.set_zone_active(active, now, &[], false);
+    }
+
+    fn close_if_pending_expired(&mut self, now: Instant, delay: Duration) -> bool {
+        self.node.close_if_pending_expired(now, delay)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct SettingsThemeSubmenuState {
     node: LocalMenuNodeState,
@@ -1046,6 +1223,7 @@ struct MenuOverlayState {
     settings_ai_models_submenu: SettingsAiModelsSubmenuState,
     settings_messages_submenu: SettingsMessagesSubmenuState,
     settings_input_submenu: SettingsInputSubmenuState,
+    debug_menu: DebugMenuState,
 }
 
 impl MenuOverlayState {
@@ -1059,7 +1237,18 @@ impl MenuOverlayState {
             settings_ai_models_submenu: SettingsAiModelsSubmenuState::closed(),
             settings_messages_submenu: SettingsMessagesSubmenuState::closed(),
             settings_input_submenu: SettingsInputSubmenuState::closed(),
+            debug_menu: DebugMenuState::closed(),
         }
+    }
+
+    fn close_settings_branch(&mut self) {
+        self.settings_first_menu.close_now();
+        self.settings_theme_submenu.close_now();
+        self.settings_language_submenu.close_now();
+        self.settings_font_submenu.close_now();
+        self.settings_ai_models_submenu.close_now();
+        self.settings_messages_submenu.close_now();
+        self.settings_input_submenu.close_now();
     }
 
     // Каже, чи будь-яке дочірнє меню налаштувань зараз активне.
@@ -1122,6 +1311,12 @@ struct FontSubmenuItem {
 #[derive(Debug, Clone)]
 struct BasicSubmenuItem {
     key: String,
+    label: String,
+}
+
+#[derive(Debug, Clone)]
+struct SettingsFirstMenuItem {
+    key: &'static str,
     label: String,
 }
 
@@ -1210,14 +1405,24 @@ pub enum Message {
     InputEdited(text_editor::Action),
     SendPressed,
     KeyboardEnterPressed { control: bool },
+    KeyboardPastePressed,
+    ClipboardTextRead(Option<String>),
     SettingsPressed,
+    DebugPressed,
+    ServerOnePressed,
     MenuButtonNoop,
     SettingsMenuItemSelected(String),
+    DebugMenuItemSelected(String),
     SettingsParentEntered,
     SettingsParentExited,
     SettingsMenuEntered,
     SettingsMenuExited,
     SettingsCloseDelayTick(Instant),
+    DebugParentEntered,
+    DebugParentExited,
+    DebugMenuEntered,
+    DebugMenuExited,
+    DebugCloseDelayTick(Instant),
     SettingsThemeParentEntered,
     SettingsThemeParentExited,
     SettingsThemeSubmenuEntered,
@@ -1257,9 +1462,13 @@ pub struct App {
     interface: InterfaceManager,
     overlay_menus: MenuOverlayState,
     input_content: text_editor::Content,
+    dialogue_scroll_id: iced::widget::scrollable::Id,
     input_scroll_id: iced::widget::scrollable::Id,
     skip_next_editor_enter: bool,
+    skip_next_editor_paste: bool,
     submit_shortcut: InputSubmitShortcut,
+    server_one_status: ServerOneStatus,
+    reasoning_model_indicator_state: ModelIndicatorState,
 }
 
 impl App {
@@ -1282,12 +1491,21 @@ impl App {
         )
     }
 
+    fn scroll_dialogue_to_bottom(&self) -> Command<Message> {
+        iced::widget::scrollable::snap_to(
+            self.dialogue_scroll_id.clone(),
+            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+        )
+    }
+
     fn submit_current_input(&mut self, source: &str) {
         let message = self.state.input.trim().to_string();
 
         if message.is_empty() {
-            self.logger
-                .log_info(&format!("Message send via {} ignored - input is empty", source));
+            self.logger.log_info(&format!(
+                "Message send via {} ignored - input is empty",
+                source
+            ));
             self.state.update_technical_output(self.logger.get_logs());
             return;
         }
@@ -1301,6 +1519,402 @@ impl App {
         self.logger
             .log_info("Message accepted, waiting for LENS response");
         self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn paste_plain_text_into_input(&mut self, text: String) {
+        if text.is_empty() {
+            return;
+        }
+
+        self.input_content
+            .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
+                Arc::new(text),
+            )));
+        self.state.update_input(self.input_content_text());
+        self.logger.log_info("Plain text pasted into input field");
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn show_reasoning_readiness(&mut self) {
+        self.logger.log_action("Debug readiness button clicked");
+
+        let runtime_config = CoreRuntimeConfig::default();
+        let readiness = CoreOrchestrator::check_reasoning_readiness(&runtime_config);
+        let response_text = Self::format_reasoning_readiness_status(&readiness);
+
+        self.state.update_response(response_text);
+        self.state.set_state(AppState::ShowingResponse);
+        self.logger.log_info("Reasoning readiness result shown");
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn show_active_runtime_config(&mut self) {
+        self.logger
+            .log_action("Debug runtime config button clicked");
+
+        let response_text = match Self::active_runtime_config() {
+            Ok(runtime_config) => Self::format_active_runtime_config(&runtime_config),
+            Err(error) => format!("Active runtime config error: {error}"),
+        };
+
+        self.state.update_response(response_text);
+        self.state.set_state(AppState::ShowingResponse);
+        self.logger.log_info("Active runtime config shown");
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn refresh_server_one_status_for_button(&mut self) {
+        match check_server_one_status() {
+            Ok(status) => {
+                self.server_one_status = status;
+                self.logger.log_info(match status {
+                    ServerOneStatus::Running => "Server 1 status checked: Ollama is running",
+                    ServerOneStatus::NotRunning => "Server 1 status checked: Ollama is not running",
+                });
+            }
+            Err(error) => {
+                self.server_one_status = ServerOneStatus::NotRunning;
+                self.logger
+                    .log_error(&format!("Server 1 status check failed: {error}"));
+            }
+        }
+    }
+
+    fn refresh_reasoning_model_indicator_state(&mut self) {
+        let real_config = RealReasoningConfig::default();
+        let model_name = real_config.model_name.trim();
+
+        if model_name.is_empty() {
+            self.reasoning_model_indicator_state = ModelIndicatorState::Empty;
+            self.logger
+                .log_info("Reasoning model indicator checked: model name is empty");
+            return;
+        }
+
+        self.reasoning_model_indicator_state = match check_server_one_model_status(model_name) {
+            Ok(ServerOneModelStatus::Available) => ModelIndicatorState::Connected,
+            Ok(ServerOneModelStatus::Unavailable) | Err(_) => {
+                ModelIndicatorState::ConfiguredDisconnected
+            }
+        };
+        self.logger
+            .log_info(match self.reasoning_model_indicator_state {
+                ModelIndicatorState::Empty => {
+                    "Reasoning model indicator checked: model name is empty"
+                }
+                ModelIndicatorState::ConfiguredDisconnected => {
+                    "Reasoning model indicator checked: configured but disconnected"
+                }
+                ModelIndicatorState::Connected => "Reasoning model indicator checked: connected",
+            });
+    }
+
+    fn model_indicator_color(state: ModelIndicatorState, colors: &UiThemeColors) -> Color {
+        match state {
+            ModelIndicatorState::Empty => colors.server_one_indicator_idle_fill.to_iced_color(),
+            ModelIndicatorState::ConfiguredDisconnected => colors
+                .server_one_button_not_running_background
+                .to_iced_color(),
+            ModelIndicatorState::Connected => {
+                colors.server_one_button_running_background.to_iced_color()
+            }
+        }
+    }
+
+    fn show_server_one_error(&mut self, message: String) {
+        self.state
+            .update_response(format!("Сервер 1 error: {message}"));
+        self.state.set_state(AppState::ShowingResponse);
+        self.logger
+            .log_error(&format!("Server 1 controlled error: {message}"));
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn handle_server_one_pressed(&mut self) {
+        self.logger
+            .log_action("Server 1 button clicked - Ollama local server control");
+
+        match check_server_one_status() {
+            Ok(ServerOneStatus::Running) => {
+                self.server_one_status = ServerOneStatus::Running;
+                self.logger
+                    .log_info("Server 1 check completed: Ollama is already running");
+                self.state.update_technical_output(self.logger.get_logs());
+            }
+            Ok(ServerOneStatus::NotRunning) => match start_server_one_if_needed() {
+                Ok(status) => {
+                    self.server_one_status = status;
+                    self.logger
+                        .log_info("Server 1 start requested and status refreshed");
+                    self.state.update_technical_output(self.logger.get_logs());
+                }
+                Err(error) => {
+                    self.server_one_status = ServerOneStatus::NotRunning;
+                    self.show_server_one_error(error.to_string());
+                }
+            },
+            Err(error) => {
+                self.server_one_status = ServerOneStatus::NotRunning;
+                self.show_server_one_error(error.to_string());
+            }
+        }
+
+        self.refresh_reasoning_model_indicator_state();
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn run_mock_reasoning_test(&mut self) {
+        self.logger
+            .log_action("Debug mock reasoning test button clicked");
+
+        let input_text = self.input_content_text().trim().to_string();
+        if input_text.is_empty() {
+            self.state.update_response(
+                "reasoning source: Mock\nlanguage source: Mock\n\nmock reasoning test error: input is empty"
+                    .to_string(),
+            );
+            self.state.set_state(AppState::ShowingResponse);
+            CoreLogger::log("debug_mock_reasoning_test", "blocked: input is empty");
+            self.logger
+                .log_info("Mock reasoning test blocked - input is empty");
+            self.state.update_technical_output(self.logger.get_logs());
+            return;
+        }
+
+        CoreLogger::log("debug_mock_reasoning_test", "started");
+
+        let settings = self.interface.current_settings();
+        let request = UiCoreRequest {
+            text: input_text,
+            language: settings.language.clone(),
+            session_id: None,
+            branch_id: None,
+            user_id: None,
+        };
+
+        let response = CoreGateway::run_mock_pipeline(request);
+        let response_text = match response.error {
+            Some(error) if response.response_text.trim().is_empty() => format!(
+                "reasoning source: Mock\nlanguage source: Mock\n\nmock reasoning test error: {error}"
+            ),
+            Some(_) => response.response_text,
+            None if response.response_text.trim().is_empty() => {
+                "reasoning source: Mock\nlanguage source: Mock\n\nmock reasoning test error: empty response"
+                    .to_string()
+            }
+            None => response.response_text,
+        };
+
+        self.state.update_response(response_text);
+        self.state.set_state(AppState::ShowingResponse);
+        CoreLogger::log("debug_mock_reasoning_test", "completed");
+        self.logger.log_info("Mock reasoning test result shown");
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn run_manual_real_reasoning_test(&mut self) {
+        self.logger
+            .log_action("Debug manual real reasoning test clicked");
+
+        let input_text = self.input_content_text().trim().to_string();
+        if input_text.is_empty() {
+            self.state.update_response(
+                "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Mock\n\nmanual real reasoning test error: input is empty".to_string(),
+            );
+            self.state.set_state(AppState::ShowingResponse);
+            self.logger
+                .log_info("Manual real reasoning test blocked - input is empty");
+            self.state.update_technical_output(self.logger.get_logs());
+            return;
+        }
+
+        let settings = self.interface.current_settings();
+        let request = UiCoreRequest {
+            text: input_text,
+            language: settings.language.clone(),
+            session_id: None,
+            branch_id: None,
+            user_id: None,
+        };
+
+        let response =
+            CoreGateway::run_manual_real_reasoning_test(request, RealReasoningConfig::default());
+        let response_text = match response.error {
+            Some(error) if response.response_text.trim().is_empty() => format!(
+                "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Mock\n\nmanual real reasoning test error: {error}"
+            ),
+            Some(_) => response.response_text,
+            None if response.response_text.trim().is_empty() => {
+                "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Mock\n\nmanual real reasoning test error: empty response".to_string()
+            }
+            None => response.response_text,
+        };
+
+        self.state.update_response(response_text);
+        self.state.set_state(AppState::ShowingResponse);
+        self.logger
+            .log_info("Manual real reasoning test result shown");
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn show_raw_reasoning_result(&mut self) {
+        self.logger
+            .log_action("Debug raw reasoning result requested");
+
+        let input_text = self.input_content_text().trim().to_string();
+        if input_text.is_empty() {
+            self.state
+                .update_response(Self::format_raw_reasoning_error("input is empty"));
+            self.state.set_state(AppState::ShowingResponse);
+            self.logger
+                .log_info("Raw reasoning result blocked - input is empty");
+            self.state.update_technical_output(self.logger.get_logs());
+            return;
+        }
+
+        let settings = self.interface.current_settings();
+        let request = UiCoreRequest {
+            text: input_text,
+            language: settings.language.clone(),
+            session_id: None,
+            branch_id: None,
+            user_id: None,
+        };
+
+        let response =
+            CoreGateway::run_manual_raw_reasoning_result(request, RealReasoningConfig::default());
+        let response_text = match (&response.error, &response.reasoning_result) {
+            (Some(error), _) => Self::format_raw_reasoning_error(error),
+            (None, Some(reasoning_result)) => Self::format_raw_reasoning_result(reasoning_result),
+            (None, None) => Self::format_raw_reasoning_error("empty reasoning result"),
+        };
+
+        self.state.update_response(response_text);
+        self.state.set_state(AppState::ShowingResponse);
+        if response.error.is_some() {
+            self.logger.log_error("Raw reasoning result failed");
+        } else {
+            self.logger.log_info("Raw reasoning result shown");
+        }
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn open_core_log(&mut self) {
+        self.logger.log_action("Debug open core log requested");
+
+        let log_path = CoreLogger::log_path();
+        let response_text = if !log_path.exists() {
+            self.logger.log_error("Core log file does not exist");
+            format!(
+                "Core log error: file does not exist\npath: {}",
+                log_path.display()
+            )
+        } else {
+            match fs::read_to_string(&log_path) {
+                Ok(content) => {
+                    self.logger.log_info("Core log content shown");
+                    format!("Core log path: {}\n\n{}", log_path.display(), content)
+                }
+                Err(error) => {
+                    self.logger.log_error("Core log file could not be read");
+                    format!(
+                        "Core log error: could not read file\npath: {}\nerror: {}",
+                        log_path.display(),
+                        error
+                    )
+                }
+            }
+        };
+
+        self.state.update_response(response_text);
+        self.state.set_state(AppState::ShowingResponse);
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn active_runtime_config() -> Result<CoreRuntimeConfig, String> {
+        Ok(CoreRuntimeConfig::default())
+    }
+
+    fn format_active_runtime_config(runtime_config: &CoreRuntimeConfig) -> String {
+        format!(
+            "Active runtime config:\nreasoning_engine: {:?}\nlanguage_engine: {:?}",
+            runtime_config.reasoning_engine, runtime_config.language_engine
+        )
+    }
+
+    fn format_reasoning_readiness_status(readiness: &ReasoningReadinessStatus) -> String {
+        match readiness {
+            ReasoningReadinessStatus::Ready => "Reasoning readiness: ready".to_string(),
+            ReasoningReadinessStatus::ConfigIncomplete { reason } => {
+                format!("Reasoning readiness error: config incomplete - {reason}")
+            }
+        }
+    }
+
+    fn format_raw_reasoning_result(reasoning_result: &ReasoningResult) -> String {
+        format!(
+            "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Not used\npayload source: core reasoning result\n\ntask:\n{}\n\nfacts:\n{}\n\nconclusions:\n{}\n\nassumptions:\n{}\n\nuncertainties:\n{}\n\nnext_actions:\n{}\n\nconfidence:\n{:.2}",
+            reasoning_result.task,
+            Self::format_raw_text_items(
+                reasoning_result
+                    .facts
+                    .iter()
+                    .map(|item| item.text.as_str())
+                    .collect()
+            ),
+            Self::format_raw_text_items(
+                reasoning_result
+                    .conclusions
+                    .iter()
+                    .map(|item| item.text.as_str())
+                    .collect()
+            ),
+            Self::format_raw_text_items(
+                reasoning_result
+                    .assumptions
+                    .iter()
+                    .map(|item| item.text.as_str())
+                    .collect()
+            ),
+            Self::format_raw_text_items(
+                reasoning_result
+                    .uncertainties
+                    .iter()
+                    .map(|item| item.text.as_str())
+                    .collect()
+            ),
+            Self::format_raw_text_items(
+                reasoning_result
+                    .next_actions
+                    .iter()
+                    .map(|item| item.text.as_str())
+                    .collect()
+            ),
+            reasoning_result.confidence,
+        )
+    }
+
+    fn format_raw_text_items(items: Vec<&str>) -> String {
+        if items.is_empty() {
+            return "- none".to_string();
+        }
+
+        let mut formatted = String::new();
+        for (index, item) in items.iter().enumerate() {
+            if index > 0 {
+                formatted.push('\n');
+            }
+            formatted.push_str("- ");
+            formatted.push_str(item);
+        }
+        formatted
+    }
+
+    fn format_raw_reasoning_error(error: impl AsRef<str>) -> String {
+        format!(
+            "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Not used\npayload source: core reasoning result\n\nraw reasoning result error: {}",
+            error.as_ref()
+        )
     }
 
     fn settings_first_menu_close_delay_command() -> Command<Message> {
@@ -1376,6 +1990,16 @@ impl App {
                 Instant::now()
             },
             Message::SettingsInputCloseDelayTick,
+        )
+    }
+
+    fn debug_menu_close_delay_command() -> Command<Message> {
+        Command::perform(
+            async {
+                std::thread::sleep(Duration::from_millis(DEBUG_MENU_CLOSE_DELAY_MS));
+                Instant::now()
+            },
+            Message::DebugCloseDelayTick,
         )
     }
 
@@ -1548,6 +2172,27 @@ impl App {
             primary_text_color: extract_color("primary_text_color"),
             secondary_text_color: extract_color("secondary_text_color"),
             separator_color: extract_color("separator_color"),
+            server_one_button_running_background: extract_color(
+                "server_one_button_running_background",
+            ),
+            server_one_button_running_hover_background: extract_color(
+                "server_one_button_running_hover_background",
+            ),
+            server_one_button_running_active_background: extract_color(
+                "server_one_button_running_active_background",
+            ),
+            server_one_button_not_running_background: extract_color(
+                "server_one_button_not_running_background",
+            ),
+            server_one_button_not_running_hover_background: extract_color(
+                "server_one_button_not_running_hover_background",
+            ),
+            server_one_button_not_running_active_background: extract_color(
+                "server_one_button_not_running_active_background",
+            ),
+            server_one_button_text_color: extract_color("server_one_button_text_color"),
+            server_one_indicator_idle_fill: extract_color("server_one_indicator_idle_fill"),
+            server_one_indicator_border: extract_color("server_one_indicator_border"),
         }
     }
 
@@ -1614,7 +2259,16 @@ impl App {
             "menu_border": Self::color_to_json(colors.menu_border),
             "primary_text_color": Self::color_to_json(colors.primary_text_color),
             "secondary_text_color": Self::color_to_json(colors.secondary_text_color),
-            "separator_color": Self::color_to_json(colors.separator_color)
+            "separator_color": Self::color_to_json(colors.separator_color),
+            "server_one_button_running_background": Self::color_to_json(colors.server_one_button_running_background),
+            "server_one_button_running_hover_background": Self::color_to_json(colors.server_one_button_running_hover_background),
+            "server_one_button_running_active_background": Self::color_to_json(colors.server_one_button_running_active_background),
+            "server_one_button_not_running_background": Self::color_to_json(colors.server_one_button_not_running_background),
+            "server_one_button_not_running_hover_background": Self::color_to_json(colors.server_one_button_not_running_hover_background),
+            "server_one_button_not_running_active_background": Self::color_to_json(colors.server_one_button_not_running_active_background),
+            "server_one_button_text_color": Self::color_to_json(colors.server_one_button_text_color),
+            "server_one_indicator_idle_fill": Self::color_to_json(colors.server_one_indicator_idle_fill),
+            "server_one_indicator_border": Self::color_to_json(colors.server_one_indicator_border)
         })
     }
 
@@ -1978,6 +2632,33 @@ impl App {
                                     primary_text_color: extract_color("primary_text_color"),
                                     secondary_text_color: extract_color("secondary_text_color"),
                                     separator_color: extract_color("separator_color"),
+                                    server_one_button_running_background: extract_color(
+                                        "server_one_button_running_background",
+                                    ),
+                                    server_one_button_running_hover_background: extract_color(
+                                        "server_one_button_running_hover_background",
+                                    ),
+                                    server_one_button_running_active_background: extract_color(
+                                        "server_one_button_running_active_background",
+                                    ),
+                                    server_one_button_not_running_background: extract_color(
+                                        "server_one_button_not_running_background",
+                                    ),
+                                    server_one_button_not_running_hover_background: extract_color(
+                                        "server_one_button_not_running_hover_background",
+                                    ),
+                                    server_one_button_not_running_active_background: extract_color(
+                                        "server_one_button_not_running_active_background",
+                                    ),
+                                    server_one_button_text_color: extract_color(
+                                        "server_one_button_text_color",
+                                    ),
+                                    server_one_indicator_idle_fill: extract_color(
+                                        "server_one_indicator_idle_fill",
+                                    ),
+                                    server_one_indicator_border: extract_color(
+                                        "server_one_indicator_border",
+                                    ),
                                 },
                             };
                         }
@@ -2005,14 +2686,43 @@ impl App {
         }
     }
 
-    fn settings_first_menu_items(&self) -> Vec<String> {
+    fn settings_first_menu_item_specs(&self) -> Vec<SettingsFirstMenuItem> {
         vec![
-            self.interface.get_string("settings.section_language"),
-            self.interface.get_string("settings.section_theme"),
-            self.interface.get_string("settings.section_fonts"),
-            self.interface.get_string("settings.section_ai_models"),
-            self.interface.get_string("settings.section_messages"),
+            SettingsFirstMenuItem {
+                key: "language",
+                label: self.localized_string_or("settings.section_language", "Language"),
+            },
+            SettingsFirstMenuItem {
+                key: "theme",
+                label: self.localized_string_or("settings.section_theme", "Theme"),
+            },
+            SettingsFirstMenuItem {
+                key: "fonts",
+                label: self.localized_string_or("settings.section_fonts", "Fonts"),
+            },
+            SettingsFirstMenuItem {
+                key: "ai_models",
+                label: self.localized_string_or("settings.section_ai_models", "AI Models"),
+            },
+            SettingsFirstMenuItem {
+                key: "messages",
+                label: self.localized_string_or("settings.section_messages", "Messages"),
+            },
         ]
+    }
+
+    fn settings_first_menu_items(&self) -> Vec<String> {
+        self.settings_first_menu_item_specs()
+            .into_iter()
+            .map(|item| item.label)
+            .collect()
+    }
+
+    fn settings_first_menu_index(&self, key: &str) -> usize {
+        self.settings_first_menu_item_specs()
+            .into_iter()
+            .position(|item| item.key == key)
+            .unwrap_or(0)
     }
 
     fn theme_submenu_items(&self) -> Vec<ThemeSubmenuItem> {
@@ -2061,6 +2771,50 @@ impl App {
             BasicSubmenuItem {
                 key: "input.enter_ctrl".to_string(),
                 label: self.localized_string_or("settings.option_enter_ctrl", "Enter+Ctrl"),
+            },
+        ]
+    }
+
+    fn debug_menu_items(&self) -> Vec<BasicSubmenuItem> {
+        vec![
+            BasicSubmenuItem {
+                key: "debug.run_mock_reasoning_test".to_string(),
+                label: self.localized_string_or(
+                    "debug.run_mock_reasoning_test",
+                    "Run Mock Reasoning Test",
+                ),
+            },
+            BasicSubmenuItem {
+                key: "debug.run_real_reasoning_test".to_string(),
+                label: self.localized_string_or(
+                    "debug.run_real_reasoning_test",
+                    "Run Real Reasoning Test",
+                ),
+            },
+            BasicSubmenuItem {
+                key: "debug.show_raw_reasoning_result".to_string(),
+                label: self.localized_string_or(
+                    "debug.show_raw_reasoning_result",
+                    "Show Raw Reasoning Result",
+                ),
+            },
+            BasicSubmenuItem {
+                key: "debug.show_reasoning_readiness".to_string(),
+                label: self.localized_string_or(
+                    "debug.show_reasoning_readiness",
+                    "Show Reasoning Readiness",
+                ),
+            },
+            BasicSubmenuItem {
+                key: "debug.show_active_runtime_config".to_string(),
+                label: self.localized_string_or(
+                    "debug.show_active_runtime_config",
+                    "Show Active Runtime Config",
+                ),
+            },
+            BasicSubmenuItem {
+                key: "debug.open_core_log".to_string(),
+                label: self.localized_string_or("debug.open_core_log", "Open Core Log"),
             },
         ]
     }
@@ -2232,13 +2986,17 @@ impl App {
         )
     }
 
+    fn calculate_debug_menu_width(&self) -> f32 {
+        let binding = self.current_menu_button_text_binding();
+        Self::calculate_menu_width_from_button_specs(
+            self.debug_menu_items()
+                .into_iter()
+                .map(|item| (item.label, binding)),
+        )
+    }
+
     fn calculate_theme_submenu_offsets(&self, first_menu_width: f32) -> (f32, f32) {
-        let theme_parent_label = self.interface.get_string("settings.section_theme");
-        let theme_parent_index = self
-            .settings_first_menu_items()
-            .into_iter()
-            .position(|label| label == theme_parent_label)
-            .unwrap_or(0);
+        let theme_parent_index = self.settings_first_menu_index("theme");
         let menu_button_height = self.nested_menu_button_height();
         let parent_item_x = Self::nested_menu_surface_padding();
         let submenu_horizontal_overlap =
@@ -2251,12 +3009,7 @@ impl App {
     }
 
     fn calculate_language_submenu_offsets(&self, first_menu_width: f32) -> (f32, f32) {
-        let language_parent_label = self.interface.get_string("settings.section_language");
-        let language_parent_index = self
-            .settings_first_menu_items()
-            .into_iter()
-            .position(|label| label == language_parent_label)
-            .unwrap_or(0);
+        let language_parent_index = self.settings_first_menu_index("language");
         let menu_button_height = self.nested_menu_button_height();
         let parent_item_x = Self::nested_menu_surface_padding();
         let submenu_horizontal_overlap =
@@ -2269,12 +3022,7 @@ impl App {
     }
 
     fn calculate_font_submenu_offsets(&self, first_menu_width: f32) -> (f32, f32) {
-        let font_parent_label = self.interface.get_string("settings.section_fonts");
-        let font_parent_index = self
-            .settings_first_menu_items()
-            .into_iter()
-            .position(|label| label == font_parent_label)
-            .unwrap_or(0);
+        let font_parent_index = self.settings_first_menu_index("fonts");
         let menu_button_height = self.nested_menu_button_height();
         let parent_item_x = Self::nested_menu_surface_padding();
         let submenu_horizontal_overlap =
@@ -2287,12 +3035,7 @@ impl App {
     }
 
     fn calculate_messages_submenu_offsets(&self, first_menu_width: f32) -> (f32, f32) {
-        let messages_parent_label = self.interface.get_string("settings.section_messages");
-        let messages_parent_index = self
-            .settings_first_menu_items()
-            .into_iter()
-            .position(|label| label == messages_parent_label)
-            .unwrap_or(0);
+        let messages_parent_index = self.settings_first_menu_index("messages");
         let menu_button_height = self.nested_menu_button_height();
         let parent_item_x = Self::nested_menu_surface_padding();
         let submenu_horizontal_overlap =
@@ -2305,12 +3048,7 @@ impl App {
     }
 
     fn calculate_ai_models_submenu_offsets(&self, first_menu_width: f32) -> (f32, f32) {
-        let ai_models_parent_label = self.interface.get_string("settings.section_ai_models");
-        let ai_models_parent_index = self
-            .settings_first_menu_items()
-            .into_iter()
-            .position(|label| label == ai_models_parent_label)
-            .unwrap_or(0);
+        let ai_models_parent_index = self.settings_first_menu_index("ai_models");
         let menu_button_height = self.nested_menu_button_height();
         let parent_item_x = Self::nested_menu_surface_padding();
         let submenu_horizontal_overlap =
@@ -2553,53 +3291,33 @@ impl App {
     ) -> Vec<Element<'_, Message>> {
         match level {
             SettingsOverlayMenuLevel::First => {
-                let language_parent_label = self.interface.get_string("settings.section_language");
-                let theme_parent_label = self.interface.get_string("settings.section_theme");
-                let font_parent_label = self.interface.get_string("settings.section_fonts");
-                let ai_models_parent_label =
-                    self.interface.get_string("settings.section_ai_models");
-                let messages_parent_label = self.interface.get_string("settings.section_messages");
                 let text_binding = self.current_menu_button_text_binding();
 
-                self.settings_first_menu_items()
+                self.settings_first_menu_item_specs()
                     .into_iter()
-                    .map(|label| {
-                        let is_language_parent = label == language_parent_label;
-                        let is_theme_parent = label == theme_parent_label;
-                        let is_font_parent = label == font_parent_label;
-                        let is_ai_models_parent = label == ai_models_parent_label;
-                        let is_messages_parent = label == messages_parent_label;
-                        let on_press = if is_language_parent
-                            || is_theme_parent
-                            || is_font_parent
-                            || is_ai_models_parent
-                            || is_messages_parent
-                        {
-                            Some(Message::MenuButtonNoop)
-                        } else {
-                            Some(Message::SettingsMenuItemSelected(label.clone()))
-                        };
-                        let visual_state = if is_language_parent
+                    .map(|item| {
+                        let on_press = Some(Message::MenuButtonNoop);
+                        let visual_state = if item.key == "language"
                             && self.overlay_menus.settings_language_submenu.is_open()
                         {
                             MenuButtonVisualState::Active
-                        } else if is_theme_parent
+                        } else if item.key == "theme"
                             && self.overlay_menus.settings_theme_submenu.is_open()
                         {
                             MenuButtonVisualState::Active
-                        } else if is_font_parent
+                        } else if item.key == "fonts"
                             && self.overlay_menus.settings_font_submenu.is_open()
                         {
                             MenuButtonVisualState::Active
-                        } else if is_ai_models_parent
+                        } else if item.key == "ai_models"
                             && self.overlay_menus.settings_ai_models_submenu.is_open()
                         {
                             MenuButtonVisualState::Active
-                        } else if is_messages_parent
+                        } else if item.key == "messages"
                             && self.overlay_menus.settings_messages_submenu.is_open()
                         {
                             MenuButtonVisualState::Active
-                        } else if is_language_parent
+                        } else if item.key == "language"
                             && self
                                 .overlay_menus
                                 .settings_language_submenu
@@ -2607,15 +3325,15 @@ impl App {
                                 .parent_active
                         {
                             MenuButtonVisualState::Hover
-                        } else if is_theme_parent
+                        } else if item.key == "theme"
                             && self.overlay_menus.settings_theme_submenu.node.parent_active
                         {
                             MenuButtonVisualState::Hover
-                        } else if is_font_parent
+                        } else if item.key == "fonts"
                             && self.overlay_menus.settings_font_submenu.node.parent_active
                         {
                             MenuButtonVisualState::Hover
-                        } else if is_ai_models_parent
+                        } else if item.key == "ai_models"
                             && self
                                 .overlay_menus
                                 .settings_ai_models_submenu
@@ -2623,7 +3341,7 @@ impl App {
                                 .parent_active
                         {
                             MenuButtonVisualState::Hover
-                        } else if is_messages_parent
+                        } else if item.key == "messages"
                             && self
                                 .overlay_menus
                                 .settings_messages_submenu
@@ -2636,7 +3354,7 @@ impl App {
                         };
 
                         let button = Self::render_nested_menu_button(
-                            label,
+                            item.label,
                             menu_width,
                             colors,
                             on_press,
@@ -2644,27 +3362,27 @@ impl App {
                             text_binding,
                         );
 
-                        if is_theme_parent {
+                        if item.key == "theme" {
                             mouse_area(button)
                                 .on_enter(Message::SettingsThemeParentEntered)
                                 .on_exit(Message::SettingsThemeParentExited)
                                 .into()
-                        } else if is_language_parent {
+                        } else if item.key == "language" {
                             mouse_area(button)
                                 .on_enter(Message::SettingsLanguageParentEntered)
                                 .on_exit(Message::SettingsLanguageParentExited)
                                 .into()
-                        } else if is_font_parent {
+                        } else if item.key == "fonts" {
                             mouse_area(button)
                                 .on_enter(Message::SettingsFontParentEntered)
                                 .on_exit(Message::SettingsFontParentExited)
                                 .into()
-                        } else if is_ai_models_parent {
+                        } else if item.key == "ai_models" {
                             mouse_area(button)
                                 .on_enter(Message::SettingsAiModelsParentEntered)
                                 .on_exit(Message::SettingsAiModelsParentExited)
                                 .into()
-                        } else if is_messages_parent {
+                        } else if item.key == "messages" {
                             mouse_area(button)
                                 .on_enter(Message::SettingsMessagesParentEntered)
                                 .on_exit(Message::SettingsMessagesParentExited)
@@ -2858,15 +3576,21 @@ impl App {
         colors: &UiThemeColors,
         settings_title_text: String,
         settings_button_text: String,
+        debug_button_text: String,
         logs_title_text: String,
         dialogue_placeholder: String,
         send_button_text: String,
-    ) -> (Element<'_, Message>, SettingsButtonMetrics) {
+    ) -> (
+        Element<'_, Message>,
+        SettingsButtonMetrics,
+        SettingsButtonMetrics,
+    ) {
         // Базовий макет містить лише елементи першої версії оболонки.
         let primary_text = colors.primary_text_color.to_iced_color();
         let logs_bg = colors.logs_background.to_iced_color();
         let logs_text = colors.logs_text_color.to_iced_color();
         let left_panel_bg = colors.left_panel_background.to_iced_color();
+        let control_separator_bg = colors.separator_color.to_iced_color();
         let button_style = ThemedButtonStyle::from_colors(colors);
         let text_input_style = ThemedTextInputStyle::from_colors(colors);
         let text_binding = self.current_language_text_binding();
@@ -2877,6 +3601,9 @@ impl App {
             .style(iced::theme::Text::Color(primary_text))
             .width(Length::Fill);
         let settings_metrics = self.calculate_settings_button_metrics(&settings_button_text);
+        let debug_metrics = self.calculate_settings_button_metrics(&debug_button_text);
+        let server_one_button_text = self.localized_string_or("ui.button_server_one", "Сервер 1");
+        let server_one_metrics = self.calculate_settings_button_metrics(&server_one_button_text);
 
         let settings_button = button(
             container(
@@ -2901,14 +3628,110 @@ impl App {
             .on_enter(Message::SettingsParentEntered)
             .on_exit(Message::SettingsParentExited);
 
-        let settings_controls: Element<Message> = column![settings_button].spacing(0).into();
+        let debug_button = button(
+            container(
+                text(debug_button_text)
+                    .size(text_binding.font_size)
+                    .font(text_binding.font())
+                    .width(Length::Fill)
+                    .horizontal_alignment(Horizontal::Center),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x()
+            .center_y(),
+        )
+        .on_press(Message::DebugPressed)
+        .style(iced::theme::Button::Custom(Box::new(button_style)))
+        .padding(0)
+        .width(Length::Fixed(debug_metrics.width))
+        .height(Length::Fixed(debug_metrics.height));
+
+        let debug_button = mouse_area(debug_button)
+            .on_enter(Message::DebugParentEntered)
+            .on_exit(Message::DebugParentExited);
+
+        let server_one_button = button(
+            container(
+                text(server_one_button_text)
+                    .size(text_binding.font_size)
+                    .font(text_binding.font())
+                    .width(Length::Fill)
+                    .horizontal_alignment(Horizontal::Center),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x()
+            .center_y(),
+        )
+        .on_press(Message::ServerOnePressed)
+        .style(iced::theme::Button::Custom(Box::new(
+            ServerControlButtonStyle::new(self.server_one_status, colors),
+        )))
+        .padding(0)
+        .width(Length::Fixed(server_one_metrics.width))
+        .height(Length::Fixed(server_one_metrics.height));
+
+        let server_one_model_led_fill =
+            Self::model_indicator_color(self.reasoning_model_indicator_state, colors);
+        let server_one_led_fill = colors.server_one_indicator_idle_fill.to_iced_color();
+        let server_one_led_border = colors.server_one_indicator_border.to_iced_color();
+        let server_one_led_one = container(text(""))
+            .width(Length::Fixed(12.0))
+            .height(Length::Fixed(12.0))
+            .style(move |_theme: &Theme| iced::widget::container::Appearance {
+                background: Some(Background::Color(server_one_model_led_fill)),
+                border: iced::Border {
+                    width: 1.0,
+                    color: server_one_led_border,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            });
+        let server_one_led_two = container(text(""))
+            .width(Length::Fixed(12.0))
+            .height(Length::Fixed(12.0))
+            .style(move |_theme: &Theme| iced::widget::container::Appearance {
+                background: Some(Background::Color(server_one_led_fill)),
+                border: iced::Border {
+                    width: 1.0,
+                    color: server_one_led_border,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            });
+        let server_one_leds = container(row![server_one_led_one, server_one_led_two].spacing(8))
+            .width(Length::Fixed(server_one_metrics.width));
+
+        let control_separator = container(text(""))
+            .height(Length::Fixed(1.0))
+            .width(Length::Fill)
+            .style(move |_theme: &Theme| iced::widget::container::Appearance {
+                background: Some(Background::Color(control_separator_bg)),
+                ..Default::default()
+            });
+        let control_separator = container(control_separator).padding([
+            CONTROL_SEPARATOR_VERTICAL_PADDING,
+            0.0,
+            CONTROL_SEPARATOR_VERTICAL_PADDING,
+            0.0,
+        ]);
+
+        let settings_controls: Element<Message> = column![
+            server_one_leds,
+            server_one_button,
+            control_separator,
+            settings_button,
+            debug_button
+        ]
+        .spacing(5)
+        .width(Length::Fill)
+        .into();
 
         let settings_panel = container(
             column![
                 settings_title,
-                container(settings_controls)
-                    .padding(10)
-                    .width(Length::Shrink)
+                container(settings_controls).padding(10).width(Length::Fill)
             ]
             .spacing(5)
             .width(Length::Fill)
@@ -2969,6 +3792,7 @@ impl App {
                 dialogue_lens_nickname_text,
                 &text_binding,
             ))
+            .id(self.dialogue_scroll_id.clone())
             .height(Length::Fill),
         )
         .style(move |_theme: &Theme| iced::widget::container::Appearance {
@@ -3095,16 +3919,22 @@ impl App {
             .height(Length::Fill)
             .into();
 
-        (main_ui, settings_metrics)
+        (main_ui, settings_metrics, debug_metrics)
     }
 
     fn render_overlay_layer<'a>(
         &'a self,
         settings_metrics: SettingsButtonMetrics,
+        debug_metrics: SettingsButtonMetrics,
         colors: &UiThemeColors,
     ) -> Option<Element<'a, Message>> {
-        self.settings_overlay_scene()
-            .map(|scene| self.render_settings_overlay_scene(scene, settings_metrics, colors))
+        if let Some(scene) = self.settings_overlay_scene() {
+            Some(self.render_settings_overlay_scene(scene, settings_metrics, colors))
+        } else if self.overlay_menus.debug_menu.is_open() {
+            Some(self.render_debug_overlay_scene(settings_metrics, debug_metrics, colors))
+        } else {
+            None
+        }
     }
 
     fn settings_overlay_scene(&self) -> Option<SettingsOverlayScene> {
@@ -3241,6 +4071,54 @@ impl App {
         }
     }
 
+    fn render_debug_overlay_scene<'a>(
+        &'a self,
+        settings_metrics: SettingsButtonMetrics,
+        debug_metrics: SettingsButtonMetrics,
+        colors: &UiThemeColors,
+    ) -> Element<'a, Message> {
+        let menu_width = self.calculate_debug_menu_width();
+        let debug_menu = self.render_debug_overlay_menu(menu_width, colors);
+        let horizontal_offset = debug_metrics.width * MENU_HORIZONTAL_ATTACH_RATIO;
+        let top_offset = settings_metrics.height
+            + 5.0
+            + debug_metrics.height * (1.0 - MENU_VERTICAL_ATTACH_RATIO);
+
+        container(debug_menu)
+            .padding([top_offset, 0.0, 0.0, horizontal_offset])
+            .width(Length::Shrink)
+            .into()
+    }
+
+    fn render_debug_overlay_menu<'a>(
+        &'a self,
+        menu_width: f32,
+        colors: &UiThemeColors,
+    ) -> Element<'a, Message> {
+        let text_binding = self.current_menu_button_text_binding();
+        let buttons = self
+            .debug_menu_items()
+            .into_iter()
+            .map(|item| {
+                Self::render_nested_menu_button(
+                    item.label,
+                    menu_width,
+                    colors,
+                    Some(Message::DebugMenuItemSelected(item.key)),
+                    MenuButtonVisualState::Normal,
+                    text_binding,
+                )
+            })
+            .collect::<Vec<Element<Message>>>();
+        let surface = Self::render_nested_menu_surface(buttons, menu_width, colors);
+        let surface = Self::render_visible_menu_surface(surface, menu_width, colors);
+
+        mouse_area(surface)
+            .on_enter(Message::DebugMenuEntered)
+            .on_exit(Message::DebugMenuExited)
+            .into()
+    }
+
     fn render_settings_overlay_nested_menu<'a>(
         &'a self,
         scene: SettingsOverlayNestedMenuScene,
@@ -3257,19 +4135,22 @@ impl App {
         colors: &UiThemeColors,
         settings_title_text: String,
         settings_button_text: String,
+        debug_button_text: String,
         logs_title_text: String,
         dialogue_placeholder: String,
         send_button_text: String,
     ) -> Element<'_, Message> {
-        let (main_ui, settings_metrics) = self.render_base_layout(
+        let (main_ui, settings_metrics, debug_metrics) = self.render_base_layout(
             colors,
             settings_title_text,
             settings_button_text,
+            debug_button_text,
             logs_title_text,
             dialogue_placeholder,
             send_button_text,
         );
-        let settings_menu_overlay = self.render_overlay_layer(settings_metrics, colors);
+        let settings_menu_overlay =
+            self.render_overlay_layer(settings_metrics, debug_metrics, colors);
 
         let root_content: Element<Message> =
             if let Some(settings_menu_overlay) = settings_menu_overlay {
@@ -3321,12 +4202,18 @@ impl Application for App {
             interface,
             overlay_menus: MenuOverlayState::closed(),
             input_content: text_editor::Content::new(),
+            dialogue_scroll_id: iced::widget::scrollable::Id::new("main-dialogue-scroll"),
             input_scroll_id: iced::widget::scrollable::Id::new("dialogue-input-scroll"),
             skip_next_editor_enter: false,
+            skip_next_editor_paste: false,
             submit_shortcut: InputSubmitShortcut::Enter,
+            server_one_status: ServerOneStatus::NotRunning,
+            reasoning_model_indicator_state: ModelIndicatorState::Empty,
         };
 
         app.logger.log_info("Application initialized");
+        app.refresh_server_one_status_for_button();
+        app.refresh_reasoning_model_indicator_state();
         // Старт застосунку виконує той самий сценарій, що й кнопка запуску.
         orchestrator::launch_startup_test(&mut app.state, &mut app.logger);
         app.logger
@@ -3342,6 +4229,11 @@ impl Application for App {
 
     fn subscription(&self) -> Subscription<Message> {
         event::listen_with(|event, _status| match event {
+            iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
+                if is_paste_shortcut(key.as_ref(), modifiers) =>
+            {
+                Some(Message::KeyboardPastePressed)
+            }
             iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
                 if matches!(
                     key.as_ref(),
@@ -3369,11 +4261,21 @@ impl Application for App {
                     return Command::none();
                 }
 
+                if self.skip_next_editor_paste
+                    && matches!(
+                        action,
+                        text_editor::Action::Edit(text_editor::Edit::Paste(_))
+                    )
+                {
+                    self.skip_next_editor_paste = false;
+                    return Command::none();
+                }
+
                 if self.submit_shortcut == InputSubmitShortcut::Enter
                     && matches!(action, text_editor::Action::Edit(text_editor::Edit::Enter))
                 {
                     self.submit_current_input(self.submit_shortcut.label());
-                    return Command::none();
+                    return self.scroll_dialogue_to_bottom();
                 }
 
                 if self.state.app_state == AppState::ShowingResponse {
@@ -3391,15 +4293,30 @@ impl Application for App {
             }
             Message::SendPressed => {
                 self.submit_current_input("send button");
+                return self.scroll_dialogue_to_bottom();
             }
             Message::KeyboardEnterPressed { control } => {
                 if self.submit_shortcut.matches_enter(control) {
                     self.skip_next_editor_enter = true;
                     self.submit_current_input(self.submit_shortcut.label());
+                    return self.scroll_dialogue_to_bottom();
                 }
+            }
+            Message::KeyboardPastePressed => {
+                self.skip_next_editor_paste = true;
+                return iced::clipboard::read(Message::ClipboardTextRead);
+            }
+            Message::ClipboardTextRead(clipboard_text) => {
+                if let Some(text) = clipboard_text {
+                    self.paste_plain_text_into_input(text);
+                    return self.scroll_input_to_bottom();
+                }
+
+                self.skip_next_editor_paste = false;
             }
             Message::SettingsPressed => {
                 let was_open = self.overlay_menus.settings_first_menu.is_open();
+                self.overlay_menus.debug_menu.close_now();
                 self.overlay_menus.settings_first_menu.toggle_open();
                 if was_open && !self.overlay_menus.settings_first_menu.is_open() {
                     self.overlay_menus.settings_theme_submenu.close_now();
@@ -3412,6 +4329,17 @@ impl Application for App {
                 self.logger
                     .log_action("Settings button pressed - toggling menu");
                 self.state.update_technical_output(self.logger.get_logs());
+            }
+            Message::DebugPressed => {
+                self.overlay_menus.close_settings_branch();
+                self.overlay_menus.debug_menu.toggle_open();
+                self.logger
+                    .log_action("Debug button pressed - toggling menu");
+                self.state.update_technical_output(self.logger.get_logs());
+            }
+            Message::ServerOnePressed => {
+                self.handle_server_one_pressed();
+                return self.scroll_dialogue_to_bottom();
             }
             Message::MenuButtonNoop => {}
             Message::SettingsMenuItemSelected(item) => {
@@ -3465,7 +4393,38 @@ impl Application for App {
                 self.overlay_menus.settings_input_submenu.close_now();
                 self.state.update_technical_output(self.logger.get_logs());
             }
+            Message::DebugMenuItemSelected(item) => {
+                self.logger
+                    .log_action(&format!("Debug menu item selected: {}", item));
+                self.overlay_menus.debug_menu.close_now();
+                if item == "debug.run_mock_reasoning_test" {
+                    self.run_mock_reasoning_test();
+                    return self.scroll_dialogue_to_bottom();
+                }
+                if item == "debug.show_reasoning_readiness" {
+                    self.show_reasoning_readiness();
+                    return self.scroll_dialogue_to_bottom();
+                }
+                if item == "debug.show_active_runtime_config" {
+                    self.show_active_runtime_config();
+                    return self.scroll_dialogue_to_bottom();
+                }
+                if item == "debug.run_real_reasoning_test" {
+                    self.run_manual_real_reasoning_test();
+                    return self.scroll_dialogue_to_bottom();
+                }
+                if item == "debug.show_raw_reasoning_result" {
+                    self.show_raw_reasoning_result();
+                    return self.scroll_dialogue_to_bottom();
+                }
+                if item == "debug.open_core_log" {
+                    self.open_core_log();
+                    return self.scroll_dialogue_to_bottom();
+                }
+                self.state.update_technical_output(self.logger.get_logs());
+            }
             Message::SettingsParentEntered => {
+                self.overlay_menus.debug_menu.close_now();
                 self.overlay_menus
                     .settings_first_menu
                     .open_from_parent_hover(Instant::now());
@@ -3503,6 +4462,42 @@ impl Application for App {
                     self.overlay_menus.settings_ai_models_submenu.close_now();
                     self.overlay_menus.settings_messages_submenu.close_now();
                     self.overlay_menus.settings_input_submenu.close_now();
+                    self.state.update_technical_output(self.logger.get_logs());
+                }
+            }
+            Message::DebugParentEntered => {
+                self.overlay_menus.close_settings_branch();
+                self.overlay_menus
+                    .debug_menu
+                    .open_from_parent_hover(Instant::now());
+            }
+            Message::DebugParentExited => {
+                self.overlay_menus
+                    .debug_menu
+                    .set_parent_button_active(false, Instant::now());
+                if self.overlay_menus.debug_menu.has_pending_close() {
+                    return Self::debug_menu_close_delay_command();
+                }
+            }
+            Message::DebugMenuEntered => {
+                self.overlay_menus
+                    .debug_menu
+                    .set_menu_zone_active(true, Instant::now());
+            }
+            Message::DebugMenuExited => {
+                self.overlay_menus
+                    .debug_menu
+                    .set_menu_zone_active(false, Instant::now());
+                if self.overlay_menus.debug_menu.has_pending_close() {
+                    return Self::debug_menu_close_delay_command();
+                }
+            }
+            Message::DebugCloseDelayTick(now) => {
+                if self
+                    .overlay_menus
+                    .debug_menu
+                    .close_if_pending_expired(now, Duration::from_millis(DEBUG_MENU_CLOSE_DELAY_MS))
+                {
                     self.state.update_technical_output(self.logger.get_logs());
                 }
             }
@@ -3747,8 +4742,10 @@ impl Application for App {
                 self.overlay_menus.settings_language_submenu.close_now();
                 self.overlay_menus.settings_font_submenu.close_now();
                 self.overlay_menus.settings_ai_models_submenu.close_now();
-                let input_branch_active =
-                    self.overlay_menus.settings_input_submenu.keeps_parent_branch_open();
+                let input_branch_active = self
+                    .overlay_menus
+                    .settings_input_submenu
+                    .keeps_parent_branch_open();
                 self.overlay_menus
                     .settings_messages_submenu
                     .set_parent_item_active(true, Instant::now(), input_branch_active);
@@ -3756,8 +4753,10 @@ impl Application for App {
                     .set_settings_menu_zone_active(true, Instant::now());
             }
             Message::SettingsMessagesParentExited => {
-                let input_branch_active =
-                    self.overlay_menus.settings_input_submenu.keeps_parent_branch_open();
+                let input_branch_active = self
+                    .overlay_menus
+                    .settings_input_submenu
+                    .keeps_parent_branch_open();
                 self.overlay_menus
                     .settings_messages_submenu
                     .set_parent_item_active(false, Instant::now(), input_branch_active);
@@ -3771,8 +4770,10 @@ impl Application for App {
                 }
             }
             Message::SettingsMessagesSubmenuEntered => {
-                let input_branch_active =
-                    self.overlay_menus.settings_input_submenu.keeps_parent_branch_open();
+                let input_branch_active = self
+                    .overlay_menus
+                    .settings_input_submenu
+                    .keeps_parent_branch_open();
                 self.overlay_menus
                     .settings_messages_submenu
                     .set_submenu_zone_active(true, Instant::now(), input_branch_active);
@@ -3780,8 +4781,10 @@ impl Application for App {
                     .set_settings_menu_zone_active(true, Instant::now());
             }
             Message::SettingsMessagesSubmenuExited => {
-                let input_branch_active =
-                    self.overlay_menus.settings_input_submenu.keeps_parent_branch_open();
+                let input_branch_active = self
+                    .overlay_menus
+                    .settings_input_submenu
+                    .keeps_parent_branch_open();
                 self.overlay_menus
                     .settings_messages_submenu
                     .set_submenu_zone_active(false, Instant::now(), input_branch_active);
@@ -3890,6 +4893,7 @@ impl Application for App {
         let settings_title_text = self.localized_string_or("ui.label_settings", "Settings");
         let settings_button_text =
             self.localized_string_or("ui.button_settings", &settings_title_text);
+        let debug_button_text = self.localized_string_or("ui.button_debug", "Debug");
         let logs_title_text = self.localized_string_or("ui.label_logs", "Logs");
         let dialogue_placeholder = self.localized_string_or("ui.placeholder_input", "Enter query");
         let send_button_text = self.localized_string_or("ui.button_send", "Send");
@@ -3898,6 +4902,7 @@ impl Application for App {
             &ui_theme.colors,
             settings_title_text,
             settings_button_text,
+            debug_button_text,
             logs_title_text,
             dialogue_placeholder,
             send_button_text,

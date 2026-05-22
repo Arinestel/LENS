@@ -2,8 +2,8 @@
 // Тут уже визначено вузький validator path для базового контракту reasoning layer.
 // Поки що тут не реалізовано складну доменну логіку, зовнішні перевірки або model validation.
 
-use crate::core::orchestrator::CorePipelineError;
 use crate::core::core_logger::CoreLogger;
+use crate::core::orchestrator::CorePipelineError;
 use crate::core::reasoning_contract::ReasoningResult;
 
 #[derive(Debug, Clone, PartialEq)]

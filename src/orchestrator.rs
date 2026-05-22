@@ -2,8 +2,8 @@
 // Він не містить майбутнього логічного ядра, пам'яті чи інтеграцій:
 // зараз лише змінює стан, пише журнал і готує тестову відповідь.
 
-use crate::logging::Logger;
 use crate::core::orchestrator::{CoreOrchestrator, OrchestratorRequest, UserQuery};
+use crate::logging::Logger;
 use crate::state::{AppState, State};
 
 // Виконує той самий сценарій, який запускає кнопка "Launch/Запуск".

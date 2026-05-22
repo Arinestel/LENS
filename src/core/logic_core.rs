@@ -43,10 +43,7 @@ impl LogicCore {
 }
 
 impl ReasoningEngine for LogicCore {
-    fn reason(
-        &self,
-        request: &OrchestratorRequest,
-    ) -> Result<ReasoningResult, CorePipelineError> {
+    fn reason(&self, request: &OrchestratorRequest) -> Result<ReasoningResult, CorePipelineError> {
         Ok(Self::build_mock_reasoning(request))
     }
 }

@@ -127,6 +127,60 @@
         "g": 0.20000000298023224,
         "r": 0.18000000715255737
       },
+      "server_one_button_not_running_active_background": {
+        "a": 1.0,
+        "b": 0.07000000029802322,
+        "g": 0.07000000029802322,
+        "r": 0.5
+      },
+      "server_one_button_not_running_background": {
+        "a": 1.0,
+        "b": 0.10000000149011612,
+        "g": 0.10000000149011612,
+        "r": 0.6600000262260437
+      },
+      "server_one_button_not_running_hover_background": {
+        "a": 1.0,
+        "b": 0.12999999523162842,
+        "g": 0.12999999523162842,
+        "r": 0.7799999713897705
+      },
+      "server_one_button_running_active_background": {
+        "a": 1.0,
+        "b": 0.12999999523162842,
+        "g": 0.36000001430511475,
+        "r": 0.05000000074505806
+      },
+      "server_one_button_running_background": {
+        "a": 1.0,
+        "b": 0.18000000715255737,
+        "g": 0.4600000083446502,
+        "r": 0.07999999821186066
+      },
+      "server_one_button_running_hover_background": {
+        "a": 1.0,
+        "b": 0.2300000041723251,
+        "g": 0.5799999833106995,
+        "r": 0.10000000149011612
+      },
+      "server_one_button_text_color": {
+        "a": 1.0,
+        "b": 1.0,
+        "g": 1.0,
+        "r": 1.0
+      },
+      "server_one_indicator_border": {
+        "a": 1.0,
+        "b": 0.2199999988079071,
+        "g": 0.07999999821186066,
+        "r": 0.019999999552965164
+      },
+      "server_one_indicator_idle_fill": {
+        "a": 1.0,
+        "b": 0.44999998807907104,
+        "g": 0.44999998807907104,
+        "r": 0.44999998807907104
+      },
       "window_background": {
         "a": 1.0,
         "b": 0.07500000298023224,
@@ -138,6 +192,11 @@
     "font_size": 14,
     "language": "uk",
     "strings": {
+      "debug.open_core_log": "Open Core Log",
+      "debug.run_mock_reasoning_test": "Run Mock Reasoning Test",
+      "debug.run_real_reasoning_test": "Run Real Reasoning Test",
+      "debug.show_active_runtime_config": "Show Active Runtime Config",
+      "debug.show_reasoning_readiness": "Show Reasoning Readiness",
       "messages.status_complete": "Завершено",
       "messages.status_initializing": "Ініціалізація",
       "messages.status_processing": "Обробка",
@@ -166,7 +225,9 @@
       "ui.button_apply": "Застосувати",
       "ui.button_cancel": "Скасувати",
       "ui.button_close": "Закрити",
+      "ui.button_debug": "Debug",
       "ui.button_send": "Надіслати",
+      "ui.button_server_one": "Сервер 1",
       "ui.button_settings": "Налаштування",
       "ui.label_dialogue": "Діалог",
       "ui.label_logs": "Логи",

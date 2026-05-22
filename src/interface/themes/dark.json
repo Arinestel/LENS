@@ -132,6 +132,60 @@
       "g": 0.2,
       "b": 0.23,
       "a": 1.0
+    },
+    "server_one_button_running_background": {
+      "r": 0.08,
+      "g": 0.46,
+      "b": 0.18,
+      "a": 1.0
+    },
+    "server_one_button_running_hover_background": {
+      "r": 0.10,
+      "g": 0.58,
+      "b": 0.23,
+      "a": 1.0
+    },
+    "server_one_button_running_active_background": {
+      "r": 0.05,
+      "g": 0.36,
+      "b": 0.13,
+      "a": 1.0
+    },
+    "server_one_button_not_running_background": {
+      "r": 0.66,
+      "g": 0.10,
+      "b": 0.10,
+      "a": 1.0
+    },
+    "server_one_button_not_running_hover_background": {
+      "r": 0.78,
+      "g": 0.13,
+      "b": 0.13,
+      "a": 1.0
+    },
+    "server_one_button_not_running_active_background": {
+      "r": 0.50,
+      "g": 0.07,
+      "b": 0.07,
+      "a": 1.0
+    },
+    "server_one_button_text_color": {
+      "r": 1.0,
+      "g": 1.0,
+      "b": 1.0,
+      "a": 1.0
+    },
+    "server_one_indicator_idle_fill": {
+      "r": 0.45,
+      "g": 0.45,
+      "b": 0.45,
+      "a": 1.0
+    },
+    "server_one_indicator_border": {
+      "r": 0.02,
+      "g": 0.08,
+      "b": 0.22,
+      "a": 1.0
     }
   }
 }

@@ -1,7 +1,9 @@
+use crate::core::ollama_reasoning_client::OllamaReasoningClient;
 use crate::core::orchestrator::{CorePipelineError, OrchestratorRequest};
 use crate::core::real_reasoning_config::RealReasoningConfig;
 use crate::core::reasoning_contract::ReasoningResult;
 use crate::core::reasoning_engine::ReasoningEngine;
+use crate::core::reasoning_response_mapping::map_raw_reasoning_backend_response;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RealReasoningEngine {
@@ -15,14 +17,10 @@ impl RealReasoningEngine {
 }
 
 impl ReasoningEngine for RealReasoningEngine {
-    fn reason(
-        &self,
-        _request: &OrchestratorRequest,
-    ) -> Result<ReasoningResult, CorePipelineError> {
-        let _config = &self.config;
+    fn reason(&self, request: &OrchestratorRequest) -> Result<ReasoningResult, CorePipelineError> {
+        let client = OllamaReasoningClient::new(self.config.clone());
+        let raw_response = client.generate(request)?;
 
-        Err(CorePipelineError {
-            message: "Real reasoning engine is not implemented yet.".to_string(),
-        })
+        map_raw_reasoning_backend_response(raw_response).map_err(CorePipelineError::from)
     }
 }

@@ -13,6 +13,13 @@ impl CoreRuntimeConfig {
             language_engine: LanguageEngineKind::Mock,
         }
     }
+
+    pub fn new_manual_real_reasoning_test() -> Self {
+        Self {
+            reasoning_engine: ReasoningEngineKind::Real,
+            language_engine: LanguageEngineKind::Mock,
+        }
+    }
 }
 
 impl Default for CoreRuntimeConfig {

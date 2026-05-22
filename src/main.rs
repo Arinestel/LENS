@@ -1,10 +1,11 @@
 // Цей файл є точкою входу в LENS Desktop Shell v0.
 // Він підключає модулі застосунку і запускає головне UI-вікно.
 
-mod interface;
 mod core;
+mod interface;
 mod logging;
 mod orchestrator;
+mod server_control;
 mod state;
 mod ui;
 

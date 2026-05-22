@@ -45,18 +45,18 @@ impl CoreEngineSelection {
     fn select_reasoning_engine(self) -> Box<dyn ReasoningEngine> {
         match self.config.reasoning_engine {
             ReasoningEngineKind::Mock => Box::new(LogicCore),
-            ReasoningEngineKind::Real => Box::new(RealReasoningEngine::new(
-                RealReasoningConfig::default(),
-            )),
+            ReasoningEngineKind::Real => {
+                Box::new(RealReasoningEngine::new(RealReasoningConfig::default()))
+            }
         }
     }
 
     fn select_language_engine(self) -> Box<dyn LanguageEngine> {
         match self.config.language_engine {
             LanguageEngineKind::Mock => Box::new(LanguageLayer),
-            LanguageEngineKind::Real => Box::new(RealLanguageEngine::new(
-                RealLanguageConfig::default(),
-            )),
+            LanguageEngineKind::Real => {
+                Box::new(RealLanguageEngine::new(RealLanguageConfig::default()))
+            }
         }
     }
 }

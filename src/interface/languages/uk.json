@@ -9,6 +9,8 @@
     "ui":  {
                "button_send":  "Надіслати",
                "button_settings":  "Налаштування",
+               "button_debug":  "Debug",
+               "button_server_one":  "Сервер 1",
                "button_close":  "Закрити",
                "button_apply":  "Застосувати",
                "button_cancel":  "Скасувати",
@@ -36,6 +38,13 @@
                      "label_font_name":  "Шрифт",
                      "label_font_size":  "Розмір"
                  },
+    "debug":  {
+                  "run_mock_reasoning_test":  "Run Mock Reasoning Test",
+                  "run_real_reasoning_test":  "Run Real Reasoning Test",
+                  "show_reasoning_readiness":  "Show Reasoning Readiness",
+                  "show_active_runtime_config":  "Show Active Runtime Config",
+                  "open_core_log":  "Open Core Log"
+              },
     "messages":  {
                      "status_initializing":  "Ініціалізація",
                      "status_ready":  "Готово",

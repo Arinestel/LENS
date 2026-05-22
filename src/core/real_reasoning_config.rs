@@ -9,10 +9,10 @@ pub struct RealReasoningConfig {
 impl RealReasoningConfig {
     pub fn new_placeholder() -> Self {
         Self {
-            provider_name: "placeholder".to_string(),
-            model_name: "real-reasoning-placeholder".to_string(),
-            endpoint: "not-configured".to_string(),
-            timeout_ms: 30_000,
+            provider_name: "ollama".to_string(),
+            model_name: "lens-logic:v0".to_string(),
+            endpoint: "http://127.0.0.1:11434".to_string(),
+            timeout_ms: 90_000,
         }
     }
 }

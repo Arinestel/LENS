@@ -1,5 +1,7 @@
 use crate::core::core_input_context::{CoreInputEnvelope, CoreSessionContext, UserQuery};
 use crate::core::orchestrator::{CoreOrchestrator, OrchestratorRequest};
+use crate::core::real_reasoning_config::RealReasoningConfig;
+use crate::core::reasoning_contract::ReasoningResult;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoreGateway;
@@ -20,8 +22,47 @@ pub struct UiCoreResponse {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiRawReasoningResponse {
+    pub reasoning_result: Option<ReasoningResult>,
+    pub confidence: f32,
+    pub error: Option<String>,
+}
+
 impl CoreGateway {
     pub fn run_mock_pipeline(request: UiCoreRequest) -> UiCoreResponse {
+        Self::run_with_orchestrator_response(CoreOrchestrator::run_mock_pipeline(
+            OrchestratorRequest::from(Self::build_input(request)),
+        ))
+    }
+
+    pub fn run_manual_real_reasoning_test(
+        request: UiCoreRequest,
+        real_config: RealReasoningConfig,
+    ) -> UiCoreResponse {
+        Self::run_with_orchestrator_response(CoreOrchestrator::run_manual_real_reasoning_test(
+            OrchestratorRequest::from(Self::build_input(request)),
+            real_config,
+        ))
+    }
+
+    pub fn run_manual_raw_reasoning_result(
+        request: UiCoreRequest,
+        real_config: RealReasoningConfig,
+    ) -> UiRawReasoningResponse {
+        let response = CoreOrchestrator::run_manual_raw_reasoning_result(
+            OrchestratorRequest::from(Self::build_input(request)),
+            real_config,
+        );
+
+        UiRawReasoningResponse {
+            reasoning_result: response.reasoning_result,
+            confidence: response.confidence,
+            error: response.error.map(|error| error.message),
+        }
+    }
+
+    fn build_input(request: UiCoreRequest) -> CoreInputEnvelope {
         let user_query = UserQuery {
             text: request.text,
             language: request.language.clone(),
@@ -35,13 +76,15 @@ impl CoreGateway {
             user_id: request.user_id,
         };
 
-        let input = CoreInputEnvelope {
+        CoreInputEnvelope {
             query: user_query,
             session_context,
-        };
+        }
+    }
 
-        let response = CoreOrchestrator::run_mock_pipeline(OrchestratorRequest::from(input));
-
+    fn run_with_orchestrator_response(
+        response: crate::core::orchestrator::OrchestratorResponse,
+    ) -> UiCoreResponse {
         UiCoreResponse {
             response_text: response.user_facing_text,
             confidence: response.confidence,

@@ -20,12 +20,34 @@ impl LanguageLayer {
             .map(|item| item.text.as_str())
             .unwrap_or("Mock reasoning result без висновку.");
 
+        let response = format!("[MOCK CORE] {} Task: {}", conclusion, reasoning_result.task);
+
+        CoreLogger::log("language_layer", "mock response formatted");
+
+        response
+    }
+
+    pub fn format_manual_real_reasoning_response(reasoning_result: &ReasoningResult) -> String {
+        CoreLogger::log(
+            "language_layer",
+            "formatting manual real reasoning response with mock language layer",
+        );
+
+        let conclusion = reasoning_result
+            .conclusions
+            .first()
+            .map(|item| item.text.as_str())
+            .unwrap_or("Mock language formatting has no conclusion text.");
+
         let response = format!(
-            "[MOCK CORE] {} Task: {}",
+            "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Mock\n\n{} Task: {}",
             conclusion, reasoning_result.task
         );
 
-        CoreLogger::log("language_layer", "mock response formatted");
+        CoreLogger::log(
+            "language_layer",
+            "manual real reasoning response formatted; reasoning source: Real; reasoning backend: Ollama; language source: Mock",
+        );
 
         response
     }

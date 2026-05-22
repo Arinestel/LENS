@@ -2,13 +2,17 @@
 // Тут визначено мінімальні контракти входу/виходу та mock orchestrator pipeline.
 // Поки що тут не реалізовано реальну orchestration logic, validation або виклики моделей.
 
-use crate::core::core_logger::CoreLogger;
 use crate::core::core_input_context::CoreInputEnvelope;
+use crate::core::core_logger::CoreLogger;
 use crate::core::core_runtime_config::CoreRuntimeConfig;
 use crate::core::engine_selection::CoreEngineSelection;
 use crate::core::language_engine::LanguageEngine;
+use crate::core::language_layer::LanguageLayer;
+use crate::core::real_reasoning_config::RealReasoningConfig;
+use crate::core::real_reasoning_engine::RealReasoningEngine;
 use crate::core::reasoning_contract::ReasoningResult;
 use crate::core::reasoning_engine::ReasoningEngine;
+use crate::core::reasoning_readiness::{ReasoningReadiness, ReasoningReadinessStatus};
 use crate::core::reasoning_validator::ReasoningValidator;
 
 pub use crate::core::core_input_context::UserQuery;
@@ -51,9 +55,77 @@ impl From<CoreInputEnvelope> for OrchestratorRequest {
 impl CoreOrchestrator {
     pub fn run_mock_pipeline(request: OrchestratorRequest) -> OrchestratorResponse {
         let runtime_config = CoreRuntimeConfig::default();
+        let readiness = Self::check_reasoning_readiness(&runtime_config);
+        CoreLogger::log("reasoning_readiness", readiness.log_message().as_str());
+
         let engines = CoreEngineSelection::from_config(runtime_config).select_engines();
 
-        Self::run_with_engines(request, engines.reasoning.as_ref(), engines.language.as_ref())
+        Self::run_with_engines(
+            request,
+            engines.reasoning.as_ref(),
+            engines.language.as_ref(),
+        )
+    }
+
+    pub fn run_manual_real_reasoning_test(
+        request: OrchestratorRequest,
+        real_config: RealReasoningConfig,
+    ) -> OrchestratorResponse {
+        let runtime_config = CoreRuntimeConfig::new_manual_real_reasoning_test();
+        let readiness = ReasoningReadiness::check(runtime_config.reasoning_engine, &real_config);
+
+        CoreLogger::log("manual_real_reasoning", readiness.log_message().as_str());
+
+        if matches!(readiness, ReasoningReadinessStatus::ConfigIncomplete { .. }) {
+            CoreLogger::log("manual_real_reasoning", "manual real reasoning path failed");
+            return OrchestratorResponse {
+                user_facing_text: Self::format_manual_real_reasoning_error(readiness.log_message()),
+                reasoning_result: None,
+                confidence: 0.0,
+                error: Some(CorePipelineError {
+                    message: readiness.log_message(),
+                }),
+            };
+        }
+
+        let reasoning_engine = RealReasoningEngine::new(real_config);
+
+        Self::run_manual_real_reasoning_with_engine(request, &reasoning_engine)
+    }
+
+    pub fn run_manual_raw_reasoning_result(
+        request: OrchestratorRequest,
+        real_config: RealReasoningConfig,
+    ) -> OrchestratorResponse {
+        let runtime_config = CoreRuntimeConfig::new_manual_real_reasoning_test();
+        let readiness = ReasoningReadiness::check(runtime_config.reasoning_engine, &real_config);
+
+        CoreLogger::log("raw_reasoning_result", readiness.log_message().as_str());
+
+        if matches!(readiness, ReasoningReadinessStatus::ConfigIncomplete { .. }) {
+            CoreLogger::log("raw_reasoning_result", "raw reasoning result path failed");
+            return OrchestratorResponse {
+                user_facing_text: String::new(),
+                reasoning_result: None,
+                confidence: 0.0,
+                error: Some(CorePipelineError {
+                    message: readiness.log_message(),
+                }),
+            };
+        }
+
+        let reasoning_engine = RealReasoningEngine::new(real_config);
+
+        Self::run_manual_raw_reasoning_with_engine(request, &reasoning_engine)
+    }
+
+    pub fn check_reasoning_readiness(
+        runtime_config: &CoreRuntimeConfig,
+    ) -> ReasoningReadinessStatus {
+        ReasoningReadiness::check(
+            runtime_config.reasoning_engine,
+            &RealReasoningConfig::default(),
+        )
     }
 
     fn run_with_engines(
@@ -61,12 +133,21 @@ impl CoreOrchestrator {
         reasoning_engine: &dyn ReasoningEngine,
         language_engine: &dyn LanguageEngine,
     ) -> OrchestratorResponse {
-        CoreLogger::log("orchestrator", "mock pipeline started");
+        Self::run_with_engines_labeled(request, reasoning_engine, language_engine, "mock pipeline")
+    }
+
+    fn run_with_engines_labeled(
+        request: OrchestratorRequest,
+        reasoning_engine: &dyn ReasoningEngine,
+        language_engine: &dyn LanguageEngine,
+        pipeline_label: &str,
+    ) -> OrchestratorResponse {
+        CoreLogger::log("orchestrator", format!("{pipeline_label} started").as_str());
 
         let reasoning_result = match reasoning_engine.reason(&request) {
             Ok(reasoning_result) => reasoning_result,
             Err(error) => {
-                CoreLogger::log("orchestrator", "mock pipeline failed");
+                CoreLogger::log("orchestrator", format!("{pipeline_label} failed").as_str());
                 return OrchestratorResponse {
                     user_facing_text: String::new(),
                     reasoning_result: None,
@@ -77,7 +158,7 @@ impl CoreOrchestrator {
         };
 
         if let Err(error) = ReasoningValidator::validate(&reasoning_result) {
-            CoreLogger::log("orchestrator", "mock pipeline failed");
+            CoreLogger::log("orchestrator", format!("{pipeline_label} failed").as_str());
             return OrchestratorResponse {
                 user_facing_text: String::new(),
                 reasoning_result: Some(reasoning_result),
@@ -89,7 +170,7 @@ impl CoreOrchestrator {
         let user_facing_text = match language_engine.format_response(&reasoning_result) {
             Ok(user_facing_text) => user_facing_text,
             Err(error) => {
-                CoreLogger::log("orchestrator", "mock pipeline failed");
+                CoreLogger::log("orchestrator", format!("{pipeline_label} failed").as_str());
                 return OrchestratorResponse {
                     user_facing_text: String::new(),
                     reasoning_result: Some(reasoning_result),
@@ -100,7 +181,10 @@ impl CoreOrchestrator {
         };
         let confidence = reasoning_result.confidence;
 
-        CoreLogger::log("orchestrator", "mock pipeline completed");
+        CoreLogger::log(
+            "orchestrator",
+            format!("{pipeline_label} completed").as_str(),
+        );
 
         OrchestratorResponse {
             user_facing_text,
@@ -108,6 +192,105 @@ impl CoreOrchestrator {
             confidence,
             error: None,
         }
+    }
+
+    fn run_manual_real_reasoning_with_engine(
+        request: OrchestratorRequest,
+        reasoning_engine: &dyn ReasoningEngine,
+    ) -> OrchestratorResponse {
+        let pipeline_label = "manual real reasoning path";
+        CoreLogger::log("orchestrator", format!("{pipeline_label} started").as_str());
+
+        let reasoning_result = match reasoning_engine.reason(&request) {
+            Ok(reasoning_result) => reasoning_result,
+            Err(error) => {
+                CoreLogger::log("orchestrator", format!("{pipeline_label} failed").as_str());
+                return OrchestratorResponse {
+                    user_facing_text: Self::format_manual_real_reasoning_error(&error.message),
+                    reasoning_result: None,
+                    confidence: 0.0,
+                    error: Some(error),
+                };
+            }
+        };
+
+        if let Err(error) = ReasoningValidator::validate(&reasoning_result) {
+            CoreLogger::log("orchestrator", format!("{pipeline_label} failed").as_str());
+            return OrchestratorResponse {
+                user_facing_text: Self::format_manual_real_reasoning_error(&error.message),
+                reasoning_result: Some(reasoning_result),
+                confidence: 0.0,
+                error: Some(error),
+            };
+        }
+
+        let user_facing_text =
+            LanguageLayer::format_manual_real_reasoning_response(&reasoning_result);
+        let confidence = reasoning_result.confidence;
+
+        CoreLogger::log(
+            "orchestrator",
+            format!("{pipeline_label} completed").as_str(),
+        );
+
+        OrchestratorResponse {
+            user_facing_text,
+            reasoning_result: Some(reasoning_result),
+            confidence,
+            error: None,
+        }
+    }
+
+    fn run_manual_raw_reasoning_with_engine(
+        request: OrchestratorRequest,
+        reasoning_engine: &dyn ReasoningEngine,
+    ) -> OrchestratorResponse {
+        let pipeline_label = "raw reasoning result path";
+        CoreLogger::log("orchestrator", format!("{pipeline_label} started").as_str());
+
+        let reasoning_result = match reasoning_engine.reason(&request) {
+            Ok(reasoning_result) => reasoning_result,
+            Err(error) => {
+                CoreLogger::log("orchestrator", format!("{pipeline_label} failed").as_str());
+                return OrchestratorResponse {
+                    user_facing_text: String::new(),
+                    reasoning_result: None,
+                    confidence: 0.0,
+                    error: Some(error),
+                };
+            }
+        };
+
+        if let Err(error) = ReasoningValidator::validate(&reasoning_result) {
+            CoreLogger::log("orchestrator", format!("{pipeline_label} failed").as_str());
+            return OrchestratorResponse {
+                user_facing_text: String::new(),
+                reasoning_result: Some(reasoning_result),
+                confidence: 0.0,
+                error: Some(error),
+            };
+        }
+
+        let confidence = reasoning_result.confidence;
+
+        CoreLogger::log(
+            "orchestrator",
+            format!("{pipeline_label} completed").as_str(),
+        );
+
+        OrchestratorResponse {
+            user_facing_text: String::new(),
+            reasoning_result: Some(reasoning_result),
+            confidence,
+            error: None,
+        }
+    }
+
+    fn format_manual_real_reasoning_error(error: impl AsRef<str>) -> String {
+        format!(
+            "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Mock\n\nmanual real reasoning test error: {}",
+            error.as_ref()
+        )
     }
 }
 
