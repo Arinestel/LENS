@@ -40,8 +40,13 @@
                  },
     "debug":  {
                   "run_mock_reasoning_test":  "Run Mock Reasoning Test",
-                  "run_real_reasoning_test":  "Run Real Reasoning Test",
+                  "run_real_reasoning_test":  "Run Full Pipeline Test",
+                  "run_full_pipeline_with_real_language_preview":  "Run Full Pipeline With Real Language Preview",
                   "show_reasoning_readiness":  "Show Reasoning Readiness",
+                  "show_language_readiness":  "Show Language Readiness",
+                  "show_real_language_request_preview":  "Show Real Language Request Preview",
+                  "run_real_language_preview_test":  "Run Real Language Preview Test",
+                  "compare_mock_vs_real_language_output":  "Compare Mock vs Real Language Output",
                   "show_active_runtime_config":  "Show Active Runtime Config",
                   "open_core_log":  "Open Core Log"
               },

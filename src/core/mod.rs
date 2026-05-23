@@ -9,6 +9,7 @@ pub mod core_runtime_config;
 pub mod engine_selection;
 pub mod language_engine;
 pub mod language_layer;
+pub mod language_readiness;
 pub mod logic_core;
 pub mod ollama_reasoning_client;
 pub mod orchestrator;

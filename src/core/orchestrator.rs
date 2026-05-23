@@ -72,14 +72,24 @@ impl CoreOrchestrator {
         real_config: RealReasoningConfig,
     ) -> OrchestratorResponse {
         let runtime_config = CoreRuntimeConfig::new_manual_real_reasoning_test();
+        CoreLogger::log(
+            "full_pipeline_test",
+            "full_pipeline_test_started: source=UI; orchestrator=CoreOrchestrator; reasoning_source=Real; reasoning_backend=Ollama; language_source=Mock",
+        );
         let readiness = ReasoningReadiness::check(runtime_config.reasoning_engine, &real_config);
 
         CoreLogger::log("manual_real_reasoning", readiness.log_message().as_str());
 
         if matches!(readiness, ReasoningReadinessStatus::ConfigIncomplete { .. }) {
-            CoreLogger::log("manual_real_reasoning", "manual real reasoning path failed");
+            CoreLogger::log(
+                "full_pipeline_test",
+                "reasoning_error: stage=readiness_check; status=error; reasoning_source=Real; reasoning_backend=Ollama; message=reasoning config incomplete",
+            );
             return OrchestratorResponse {
-                user_facing_text: Self::format_manual_real_reasoning_error(readiness.log_message()),
+                user_facing_text: Self::format_full_pipeline_error(
+                    "pipeline error",
+                    readiness.log_message(),
+                ),
                 reasoning_result: None,
                 confidence: 0.0,
                 error: Some(CorePipelineError {
@@ -167,7 +177,10 @@ impl CoreOrchestrator {
             };
         }
 
-        let user_facing_text = match language_engine.format_response(&reasoning_result) {
+        let user_facing_text = match language_engine.format_response(
+            &reasoning_result,
+            request.input.session_context.request_language.as_str(),
+        ) {
             Ok(user_facing_text) => user_facing_text,
             Err(error) => {
                 CoreLogger::log("orchestrator", format!("{pipeline_label} failed").as_str());
@@ -198,39 +211,83 @@ impl CoreOrchestrator {
         request: OrchestratorRequest,
         reasoning_engine: &dyn ReasoningEngine,
     ) -> OrchestratorResponse {
-        let pipeline_label = "manual real reasoning path";
+        let pipeline_label = "full pipeline test";
         CoreLogger::log("orchestrator", format!("{pipeline_label} started").as_str());
+        CoreLogger::log(
+            "full_pipeline_test",
+            "reasoning_started: stage=reasoning; status=started; reasoning_source=Real; reasoning_backend=Ollama",
+        );
 
         let reasoning_result = match reasoning_engine.reason(&request) {
             Ok(reasoning_result) => reasoning_result,
             Err(error) => {
                 CoreLogger::log("orchestrator", format!("{pipeline_label} failed").as_str());
+                CoreLogger::log(
+                    "full_pipeline_test",
+                    format!(
+                        "reasoning_error: stage=reasoning; status=error; reasoning_source=Real; reasoning_backend=Ollama; message={}",
+                        error.message
+                    )
+                    .as_str(),
+                );
                 return OrchestratorResponse {
-                    user_facing_text: Self::format_manual_real_reasoning_error(&error.message),
+                    user_facing_text: Self::format_full_pipeline_error(
+                        "reasoning error",
+                        &error.message,
+                    ),
                     reasoning_result: None,
                     confidence: 0.0,
                     error: Some(error),
                 };
             }
         };
+        CoreLogger::log(
+            "full_pipeline_test",
+            "reasoning_completed: stage=reasoning; status=success; output=ReasoningResult",
+        );
 
         if let Err(error) = ReasoningValidator::validate(&reasoning_result) {
             CoreLogger::log("orchestrator", format!("{pipeline_label} failed").as_str());
+            CoreLogger::log(
+                "full_pipeline_test",
+                format!(
+                    "pipeline_error: stage=reasoning_validation; status=error; message={}",
+                    error.message
+                )
+                .as_str(),
+            );
             return OrchestratorResponse {
-                user_facing_text: Self::format_manual_real_reasoning_error(&error.message),
+                user_facing_text: Self::format_full_pipeline_error(
+                    "pipeline error",
+                    &error.message,
+                ),
                 reasoning_result: Some(reasoning_result),
                 confidence: 0.0,
                 error: Some(error),
             };
         }
 
-        let user_facing_text =
-            LanguageLayer::format_manual_real_reasoning_response(&reasoning_result);
+        CoreLogger::log(
+            "full_pipeline_test",
+            "language_formatting_started: stage=language_formatting; status=started; language_source=Mock; input=ReasoningResult",
+        );
+        let user_facing_text = LanguageLayer::format_manual_real_reasoning_response(
+            &reasoning_result,
+            request.input.session_context.request_language.as_str(),
+        );
+        CoreLogger::log(
+            "full_pipeline_test",
+            "language_formatting_completed: stage=language_formatting; status=success; language_source=Mock; output=user_facing_answer",
+        );
         let confidence = reasoning_result.confidence;
 
         CoreLogger::log(
             "orchestrator",
             format!("{pipeline_label} completed").as_str(),
+        );
+        CoreLogger::log(
+            "full_pipeline_test",
+            "full_pipeline_test_completed: status=success; output=user_facing_answer; reasoning_source=Real; reasoning_backend=Ollama; language_source=Mock",
         );
 
         OrchestratorResponse {
@@ -286,9 +343,9 @@ impl CoreOrchestrator {
         }
     }
 
-    fn format_manual_real_reasoning_error(error: impl AsRef<str>) -> String {
+    fn format_full_pipeline_error(stage: &str, error: impl AsRef<str>) -> String {
         format!(
-            "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Mock\n\nmanual real reasoning test error: {}",
+            "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Mock\n\nfull pipeline test {stage}: {}",
             error.as_ref()
         )
     }

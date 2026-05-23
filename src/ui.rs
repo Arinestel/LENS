@@ -21,10 +21,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::core::core_gateway::{CoreGateway, UiCoreRequest};
+use crate::core::core_gateway::{
+    CoreGateway, UiCoreRequest, UiFullPipelineRealLanguagePreviewResponse,
+    UiLanguageComparisonResponse,
+};
 use crate::core::core_logger::CoreLogger;
 use crate::core::core_runtime_config::CoreRuntimeConfig;
+use crate::core::engine_selection::LanguageEngineKind;
+use crate::core::language_readiness::{LanguageReadiness, LanguageReadinessStatus};
 use crate::core::orchestrator::CoreOrchestrator;
+use crate::core::real_language_config::RealLanguageConfig;
+use crate::core::real_language_engine::RealLanguageAdapterRequest;
 use crate::core::real_reasoning_config::RealReasoningConfig;
 use crate::core::reasoning_contract::ReasoningResult;
 use crate::core::reasoning_readiness::ReasoningReadinessStatus;
@@ -636,6 +643,7 @@ impl UiTheme {
 struct SettingsButtonMetrics {
     width: f32,
     height: f32,
+    top_offset: f32,
 }
 
 // ButtonGeometry описує ширину й висоту кнопки перед її малюванням.
@@ -1469,6 +1477,8 @@ pub struct App {
     submit_shortcut: InputSubmitShortcut,
     server_one_status: ServerOneStatus,
     reasoning_model_indicator_state: ModelIndicatorState,
+    language_model_indicator_state: ModelIndicatorState,
+    last_reasoning_result: Option<ReasoningResult>,
 }
 
 impl App {
@@ -1548,18 +1558,206 @@ impl App {
         self.state.update_technical_output(self.logger.get_logs());
     }
 
+    fn show_language_readiness(&mut self) {
+        self.logger
+            .log_action("Debug language readiness button clicked");
+
+        let response_text = match Self::active_runtime_config() {
+            Ok(runtime_config) => {
+                let real_config = RealLanguageConfig::default();
+                let readiness = Self::check_language_readiness(&runtime_config, &real_config);
+                self.language_model_indicator_state =
+                    Self::language_indicator_state_from_readiness(&readiness);
+                Self::format_language_readiness_status(
+                    &runtime_config,
+                    &real_config,
+                    &readiness,
+                    self.language_model_indicator_state,
+                )
+            }
+            Err(error) => format!("Language readiness error: {error}"),
+        };
+
+        self.state.update_response(response_text);
+        self.state.set_state(AppState::ShowingResponse);
+        self.logger.log_info("Language readiness result shown");
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
     fn show_active_runtime_config(&mut self) {
         self.logger
             .log_action("Debug runtime config button clicked");
 
         let response_text = match Self::active_runtime_config() {
-            Ok(runtime_config) => Self::format_active_runtime_config(&runtime_config),
+            Ok(runtime_config) => {
+                let real_config = RealLanguageConfig::default();
+                Self::format_active_runtime_config(&runtime_config, &real_config)
+            }
             Err(error) => format!("Active runtime config error: {error}"),
         };
 
         self.state.update_response(response_text);
         self.state.set_state(AppState::ShowingResponse);
         self.logger.log_info("Active runtime config shown");
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn show_real_language_request_preview(&mut self) {
+        self.logger
+            .log_action("Debug real language request preview requested");
+
+        let Some(reasoning_result) = self.last_reasoning_result.as_ref() else {
+            self.state.update_response(
+                "Real Language Request Preview\npreview only - generation not executed\n\nNo ReasoningResult is available yet. Run Full Pipeline Test or another reasoning test first."
+                    .to_string(),
+            );
+            self.state.set_state(AppState::ShowingResponse);
+            self.logger
+                .log_info("Real language request preview blocked - no ReasoningResult");
+            self.state.update_technical_output(self.logger.get_logs());
+            return;
+        };
+
+        let settings = self.interface.current_settings();
+        let preview = CoreGateway::preview_real_language_request(
+            reasoning_result,
+            settings.language.as_str(),
+            RealLanguageConfig::default(),
+        );
+        let response_text = match (preview.request, preview.error) {
+            (Some(request), _) => {
+                Self::format_real_language_request_preview(settings.language.as_str(), &request)
+            }
+            (None, Some(error)) => format!(
+                "Real Language Request Preview\npreview only - generation not executed\n\nrequest preview error: {error}"
+            ),
+            (None, None) => {
+                "Real Language Request Preview\npreview only - generation not executed\n\nrequest preview error: empty preview response"
+                    .to_string()
+            }
+        };
+
+        self.state.update_response(response_text);
+        self.state.set_state(AppState::ShowingResponse);
+        self.logger.log_info("Real language request preview shown");
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn run_real_language_preview_test(&mut self) {
+        self.logger
+            .log_action("Debug real language preview test requested");
+
+        let Some(reasoning_result) = self.last_reasoning_result.as_ref() else {
+            self.state.update_response(
+                "Real Language Preview Test\nreal language generation preview - not used by full pipeline\n\nNo ReasoningResult is available yet. Run Full Pipeline Test or another reasoning test first."
+                    .to_string(),
+            );
+            self.state.set_state(AppState::ShowingResponse);
+            self.logger
+                .log_info("Real language preview test blocked - no ReasoningResult");
+            self.state.update_technical_output(self.logger.get_logs());
+            return;
+        };
+
+        let settings = self.interface.current_settings();
+        let response = CoreGateway::run_real_language_preview_test(
+            reasoning_result,
+            settings.language.as_str(),
+            RealLanguageConfig::default(),
+        );
+        let response_text = match response.error {
+            Some(error) => format!(
+                "Real Language Preview Test\nreal language generation preview - not used by full pipeline\n\nlanguage generation preview error: {error}"
+            ),
+            None if response.generated_text.trim().is_empty() => {
+                "Real Language Preview Test\nreal language generation preview - not used by full pipeline\n\nlanguage generation preview error: empty response"
+                    .to_string()
+            }
+            None => Self::format_real_language_preview_test_output(
+                &response.generated_text,
+                &response.warnings,
+            ),
+        };
+
+        self.state.update_response(response_text);
+        self.state.set_state(AppState::ShowingResponse);
+        self.logger
+            .log_info("Real language preview test result shown");
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn compare_mock_vs_real_language_output(&mut self) {
+        self.logger
+            .log_action("Debug language comparison requested");
+
+        let Some(reasoning_result) = self.last_reasoning_result.as_ref() else {
+            self.state.update_response(
+                "Compare Mock vs Real Language Output\ncomparison note: real preview is not used by full pipeline\n\nNo ReasoningResult is available yet. Run Full Pipeline Test or another reasoning test first."
+                    .to_string(),
+            );
+            self.state.set_state(AppState::ShowingResponse);
+            self.logger
+                .log_info("Language comparison blocked - no ReasoningResult");
+            self.state.update_technical_output(self.logger.get_logs());
+            return;
+        };
+
+        let settings = self.interface.current_settings();
+        let comparison = CoreGateway::compare_mock_vs_real_language_output(
+            reasoning_result,
+            settings.language.as_str(),
+            RealLanguageConfig::default(),
+        );
+        let response_text = Self::format_language_comparison_report(&comparison);
+
+        self.state.update_response(response_text);
+        self.state.set_state(AppState::ShowingResponse);
+        self.logger.log_info("Language comparison report shown");
+        self.state.update_technical_output(self.logger.get_logs());
+    }
+
+    fn run_full_pipeline_with_real_language_preview(&mut self) {
+        self.logger
+            .log_action("Debug full pipeline with real language preview requested");
+        CoreLogger::log(
+            "full_pipeline_real_language_preview",
+            "ui_action_received: action=Run Full Pipeline With Real Language Preview; source=UI",
+        );
+
+        let mut input_text = self.input_content_text().trim().to_string();
+        if input_text.is_empty() {
+            input_text =
+                "Розклади задачу: потрібно перевірити full pipeline з real language preview."
+                    .to_string();
+            self.logger.log_info(
+                "Full pipeline with real language preview uses default test prompt because input is empty",
+            );
+        }
+
+        let settings = self.interface.current_settings();
+        let request = UiCoreRequest {
+            text: input_text,
+            language: settings.language.clone(),
+            session_id: None,
+            branch_id: None,
+            user_id: None,
+        };
+
+        let response = CoreGateway::run_full_pipeline_with_real_language_preview(
+            request,
+            RealReasoningConfig::default(),
+            RealLanguageConfig::default(),
+        );
+        if let Some(reasoning_result) = response.reasoning_result.clone() {
+            self.last_reasoning_result = Some(reasoning_result);
+        }
+
+        let response_text = Self::format_full_pipeline_real_language_preview_output(&response);
+
+        self.state.update_response(response_text);
+        self.state.set_state(AppState::ShowingResponse);
+        self.logger
+            .log_info("Full pipeline with real language preview result shown");
         self.state.update_technical_output(self.logger.get_logs());
     }
 
@@ -1607,6 +1805,57 @@ impl App {
                 }
                 ModelIndicatorState::Connected => "Reasoning model indicator checked: connected",
             });
+    }
+
+    fn refresh_language_model_indicator_state(&mut self) {
+        let runtime_config = match Self::active_runtime_config() {
+            Ok(runtime_config) => runtime_config,
+            Err(error) => {
+                self.language_model_indicator_state = ModelIndicatorState::Empty;
+                self.logger.log_error(&format!(
+                    "Language model indicator config check failed: {error}"
+                ));
+                return;
+            }
+        };
+
+        let real_config = RealLanguageConfig::default();
+        let readiness = Self::check_language_readiness(&runtime_config, &real_config);
+        self.language_model_indicator_state =
+            Self::language_indicator_state_from_readiness(&readiness);
+        self.logger
+            .log_info(match self.language_model_indicator_state {
+                ModelIndicatorState::Empty => {
+                    "Language model indicator checked: real language model is not configured"
+                }
+                ModelIndicatorState::ConfiguredDisconnected => {
+                    "Language model indicator checked: configured but unavailable"
+                }
+                ModelIndicatorState::Connected => "Language model indicator checked: connected",
+            });
+    }
+
+    fn check_language_readiness(
+        _runtime_config: &CoreRuntimeConfig,
+        real_config: &RealLanguageConfig,
+    ) -> LanguageReadinessStatus {
+        LanguageReadiness::check_preview_config(real_config, |model_name| {
+            check_server_one_model_status(model_name)
+                .map(|status| status == ServerOneModelStatus::Available)
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn language_indicator_state_from_readiness(
+        readiness: &LanguageReadinessStatus,
+    ) -> ModelIndicatorState {
+        match readiness {
+            LanguageReadinessStatus::Ready => ModelIndicatorState::Connected,
+            LanguageReadinessStatus::NotConfigured { .. } => ModelIndicatorState::Empty,
+            LanguageReadinessStatus::Unavailable { .. } => {
+                ModelIndicatorState::ConfiguredDisconnected
+            }
+        }
     }
 
     fn model_indicator_color(state: ModelIndicatorState, colors: &UiThemeColors) -> Color {
@@ -1693,6 +1942,9 @@ impl App {
         };
 
         let response = CoreGateway::run_mock_pipeline(request);
+        if let Some(reasoning_result) = response.reasoning_result.clone() {
+            self.last_reasoning_result = Some(reasoning_result);
+        }
         let response_text = match response.error {
             Some(error) if response.response_text.trim().is_empty() => format!(
                 "reasoning source: Mock\nlanguage source: Mock\n\nmock reasoning test error: {error}"
@@ -1713,19 +1965,18 @@ impl App {
     }
 
     fn run_manual_real_reasoning_test(&mut self) {
-        self.logger
-            .log_action("Debug manual real reasoning test clicked");
+        self.logger.log_action("Debug full pipeline test clicked");
+        CoreLogger::log(
+            "full_pipeline_test",
+            "ui_action_received: action=Run Full Pipeline Test; source=UI",
+        );
 
-        let input_text = self.input_content_text().trim().to_string();
+        let mut input_text = self.input_content_text().trim().to_string();
         if input_text.is_empty() {
-            self.state.update_response(
-                "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Mock\n\nmanual real reasoning test error: input is empty".to_string(),
-            );
-            self.state.set_state(AppState::ShowingResponse);
+            input_text =
+                "Розклади задачу: потрібно перевірити повний pipeline LENS App.".to_string();
             self.logger
-                .log_info("Manual real reasoning test blocked - input is empty");
-            self.state.update_technical_output(self.logger.get_logs());
-            return;
+                .log_info("Full pipeline test uses default test prompt because input is empty");
         }
 
         let settings = self.interface.current_settings();
@@ -1739,21 +1990,27 @@ impl App {
 
         let response =
             CoreGateway::run_manual_real_reasoning_test(request, RealReasoningConfig::default());
+        if let Some(reasoning_result) = response.reasoning_result.clone() {
+            self.last_reasoning_result = Some(reasoning_result);
+        }
         let response_text = match response.error {
             Some(error) if response.response_text.trim().is_empty() => format!(
-                "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Mock\n\nmanual real reasoning test error: {error}"
+                "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Mock\n\nfull pipeline test pipeline error: {error}"
             ),
             Some(_) => response.response_text,
             None if response.response_text.trim().is_empty() => {
-                "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Mock\n\nmanual real reasoning test error: empty response".to_string()
+                "reasoning source: Real\nreasoning backend: Ollama\nlanguage source: Mock\n\nfull pipeline test pipeline error: empty response".to_string()
             }
             None => response.response_text,
         };
 
         self.state.update_response(response_text);
         self.state.set_state(AppState::ShowingResponse);
-        self.logger
-            .log_info("Manual real reasoning test result shown");
+        CoreLogger::log(
+            "full_pipeline_test",
+            "ui_response_updated: output=user_facing_answer; target=response_area",
+        );
+        self.logger.log_info("Full pipeline test result shown");
         self.state.update_technical_output(self.logger.get_logs());
     }
 
@@ -1783,6 +2040,9 @@ impl App {
 
         let response =
             CoreGateway::run_manual_raw_reasoning_result(request, RealReasoningConfig::default());
+        if let Some(reasoning_result) = response.reasoning_result.clone() {
+            self.last_reasoning_result = Some(reasoning_result);
+        }
         let response_text = match (&response.error, &response.reasoning_result) {
             (Some(error), _) => Self::format_raw_reasoning_error(error),
             (None, Some(reasoning_result)) => Self::format_raw_reasoning_result(reasoning_result),
@@ -1835,10 +2095,23 @@ impl App {
         Ok(CoreRuntimeConfig::default())
     }
 
-    fn format_active_runtime_config(runtime_config: &CoreRuntimeConfig) -> String {
+    fn format_active_runtime_config(
+        runtime_config: &CoreRuntimeConfig,
+        real_config: &RealLanguageConfig,
+    ) -> String {
+        let diagnostics = real_config.diagnostics();
         format!(
-            "Active runtime config:\nreasoning_engine: {:?}\nlanguage_engine: {:?}",
-            runtime_config.reasoning_engine, runtime_config.language_engine
+            "Active runtime config:\nreasoning_engine: {:?}\nlanguage_engine: {:?}\n\nreal language config:\nprovider_name: {}\nmodel: {}\nendpoint: {}\ntimeout: {} ms\nlanguage engine kind: {:?}\nlanguage engine source: {}\nconfig complete: {}\nmissing/invalid fields:\n{}",
+            runtime_config.reasoning_engine,
+            runtime_config.language_engine,
+            Self::display_config_value(real_config.provider_name.as_str()),
+            Self::display_config_value(real_config.model_name.as_str()),
+            Self::display_config_value(real_config.endpoint.as_str()),
+            real_config.timeout_ms,
+            runtime_config.language_engine,
+            Self::language_engine_label(runtime_config.language_engine),
+            diagnostics.is_complete,
+            Self::format_config_issues(&diagnostics.issues)
         )
     }
 
@@ -1848,6 +2121,200 @@ impl App {
             ReasoningReadinessStatus::ConfigIncomplete { reason } => {
                 format!("Reasoning readiness error: config incomplete - {reason}")
             }
+        }
+    }
+
+    fn format_real_language_request_preview(
+        requested_language: &str,
+        request: &RealLanguageAdapterRequest,
+    ) -> String {
+        format!(
+            "Real Language Request Preview\npreview only - generation not executed\n\nrequested language: {}\nmodel: {}\nendpoint: {}\ntimeout_ms: {}\n\nsystem prompt:\n{}\n\nuser prompt:\n{}",
+            requested_language,
+            request.model_name,
+            request.endpoint,
+            request.timeout_ms,
+            request.system_prompt,
+            request.user_prompt
+        )
+    }
+
+    fn format_real_language_preview_test_output(
+        generated_text: &str,
+        warnings: &[String],
+    ) -> String {
+        let mut output = String::from(
+            "Real Language Preview Test\nreal language generation preview - not used by full pipeline",
+        );
+
+        if !warnings.is_empty() {
+            output.push_str("\n\nwarnings:");
+            for warning in warnings {
+                output.push_str("\n- ");
+                output.push_str(warning);
+            }
+        }
+
+        output.push_str("\n\ngenerated answer:\n");
+        output.push_str(generated_text);
+        output
+    }
+
+    fn format_language_comparison_report(comparison: &UiLanguageComparisonResponse) -> String {
+        let mut output = String::from(
+            "Compare Mock vs Real Language Output\ncomparison note: real preview is not used by full pipeline",
+        );
+
+        output.push_str("\n\nmock language output:\n");
+        output.push_str(&comparison.mock_output);
+
+        output.push_str("\n\nreal language preview output:\n");
+        match (&comparison.real_output, &comparison.real_error) {
+            (Some(real_output), _) => output.push_str(real_output),
+            (None, Some(error)) => {
+                output.push_str("real preview error: ");
+                output.push_str(error);
+            }
+            (None, None) => output.push_str("real preview error: empty preview response"),
+        }
+
+        output.push_str("\n\nwarnings:");
+        if comparison.real_warnings.is_empty() {
+            output.push_str("\n- none");
+        } else {
+            for warning in &comparison.real_warnings {
+                output.push_str("\n- ");
+                output.push_str(warning);
+            }
+        }
+
+        output
+    }
+
+    fn format_full_pipeline_real_language_preview_output(
+        response: &UiFullPipelineRealLanguagePreviewResponse,
+    ) -> String {
+        let mut output = String::from(
+            "Run Full Pipeline With Real Language Preview\nfull pipeline with real language preview - not default pipeline",
+        );
+
+        if let Some(error) = &response.error {
+            output.push_str("\n\n");
+            match response.error_stage.as_deref() {
+                Some("reasoning") => output.push_str("reasoning error: "),
+                Some("language preview") => {
+                    output.push_str("reasoning stage: completed\nlanguage preview error: ")
+                }
+                Some(stage) => {
+                    output.push_str(stage);
+                    output.push_str(" error: ");
+                }
+                None => output.push_str("pipeline error: "),
+            }
+            output.push_str(error);
+            return output;
+        }
+
+        output.push_str("\n\nreasoning stage: completed");
+
+        output.push_str("\n\nwarnings:");
+        if response.warnings.is_empty() {
+            output.push_str("\n- none");
+        } else {
+            for warning in &response.warnings {
+                output.push_str("\n- ");
+                output.push_str(warning);
+            }
+        }
+
+        output.push_str("\n\ngenerated real language preview answer:\n");
+        output.push_str(&response.generated_text);
+
+        output
+    }
+
+    fn format_language_readiness_status(
+        runtime_config: &CoreRuntimeConfig,
+        real_config: &RealLanguageConfig,
+        readiness: &LanguageReadinessStatus,
+        indicator_state: ModelIndicatorState,
+    ) -> String {
+        let language_source = Self::language_engine_label(runtime_config.language_engine);
+        let diagnostics = real_config.diagnostics();
+
+        format!(
+            "Language readiness:\nactive language source: {language_source}\nactive language engine: {language_source}\nactive language engine kind: {:?}\n\nreal language preview config:\nprovider_name: {}\nmodel: {}\nendpoint: {}\ntimeout: {} ms\nconfig complete: {}\nmissing/invalid fields:\n{}\nconfirmed readiness check: {}\nindicator state: {}\nexplanation: {}",
+            runtime_config.language_engine,
+            Self::display_config_value(real_config.provider_name.as_str()),
+            Self::display_config_value(real_config.model_name.as_str()),
+            Self::display_config_value(real_config.endpoint.as_str()),
+            real_config.timeout_ms,
+            diagnostics.is_complete,
+            Self::format_config_issues(&diagnostics.issues),
+            Self::language_readiness_check_label(readiness),
+            Self::model_indicator_state_label(indicator_state),
+            Self::language_indicator_explanation(readiness)
+        )
+    }
+
+    fn display_config_value(value: &str) -> &str {
+        if value.trim().is_empty() {
+            "<empty>"
+        } else {
+            value
+        }
+    }
+
+    fn format_config_issues(issues: &[String]) -> String {
+        if issues.is_empty() {
+            return "- none".to_string();
+        }
+
+        let mut output = String::new();
+        for issue in issues {
+            output.push_str("- ");
+            output.push_str(issue);
+            output.push('\n');
+        }
+        output.trim_end().to_string()
+    }
+
+    fn language_readiness_check_label(readiness: &LanguageReadinessStatus) -> String {
+        match readiness {
+            LanguageReadinessStatus::Ready => "confirmed".to_string(),
+            LanguageReadinessStatus::NotConfigured { reason } => {
+                format!("not run - {reason}")
+            }
+            LanguageReadinessStatus::Unavailable { reason } => {
+                format!("failed - {reason}")
+            }
+        }
+    }
+
+    fn language_engine_label(engine: LanguageEngineKind) -> &'static str {
+        match engine {
+            LanguageEngineKind::Mock => "Mock",
+            LanguageEngineKind::Real => "Real",
+        }
+    }
+
+    fn model_indicator_state_label(state: ModelIndicatorState) -> &'static str {
+        match state {
+            ModelIndicatorState::Empty => "Empty",
+            ModelIndicatorState::ConfiguredDisconnected => "ConfiguredDisconnected",
+            ModelIndicatorState::Connected => "Connected",
+        }
+    }
+
+    fn language_indicator_explanation(readiness: &LanguageReadinessStatus) -> &'static str {
+        match readiness {
+            LanguageReadinessStatus::NotConfigured { .. } => {
+                "language model is not configured, so the indicator stays empty"
+            }
+            LanguageReadinessStatus::Unavailable { .. } => {
+                "language model is configured, but readiness check did not confirm availability"
+            }
+            LanguageReadinessStatus::Ready => "language model readiness is confirmed",
         }
     }
 
@@ -2683,6 +3150,7 @@ impl App {
         SettingsButtonMetrics {
             width: geometry.width,
             height: geometry.height,
+            top_offset: 0.0,
         }
     }
 
@@ -2786,9 +3254,14 @@ impl App {
             },
             BasicSubmenuItem {
                 key: "debug.run_real_reasoning_test".to_string(),
+                label: self
+                    .localized_string_or("debug.run_real_reasoning_test", "Run Full Pipeline Test"),
+            },
+            BasicSubmenuItem {
+                key: "debug.run_full_pipeline_with_real_language_preview".to_string(),
                 label: self.localized_string_or(
-                    "debug.run_real_reasoning_test",
-                    "Run Real Reasoning Test",
+                    "debug.run_full_pipeline_with_real_language_preview",
+                    "Run Full Pipeline With Real Language Preview",
                 ),
             },
             BasicSubmenuItem {
@@ -2803,6 +3276,34 @@ impl App {
                 label: self.localized_string_or(
                     "debug.show_reasoning_readiness",
                     "Show Reasoning Readiness",
+                ),
+            },
+            BasicSubmenuItem {
+                key: "debug.show_language_readiness".to_string(),
+                label: self.localized_string_or(
+                    "debug.show_language_readiness",
+                    "Show Language Readiness",
+                ),
+            },
+            BasicSubmenuItem {
+                key: "debug.show_real_language_request_preview".to_string(),
+                label: self.localized_string_or(
+                    "debug.show_real_language_request_preview",
+                    "Show Real Language Request Preview",
+                ),
+            },
+            BasicSubmenuItem {
+                key: "debug.run_real_language_preview_test".to_string(),
+                label: self.localized_string_or(
+                    "debug.run_real_language_preview_test",
+                    "Run Real Language Preview Test",
+                ),
+            },
+            BasicSubmenuItem {
+                key: "debug.compare_mock_vs_real_language_output".to_string(),
+                label: self.localized_string_or(
+                    "debug.compare_mock_vs_real_language_output",
+                    "Compare Mock vs Real Language Output",
                 ),
             },
             BasicSubmenuItem {
@@ -2997,67 +3498,27 @@ impl App {
 
     fn calculate_theme_submenu_offsets(&self, first_menu_width: f32) -> (f32, f32) {
         let theme_parent_index = self.settings_first_menu_index("theme");
-        let menu_button_height = self.nested_menu_button_height();
-        let parent_item_x = Self::nested_menu_surface_padding();
-        let submenu_horizontal_overlap =
-            first_menu_width * (1.0 - MENU_HORIZONTAL_ATTACH_RATIO) - parent_item_x;
-        let submenu_top_offset = Self::nested_menu_surface_padding()
-            + theme_parent_index as f32 * (menu_button_height + 1.0)
-            + menu_button_height * MENU_VERTICAL_ATTACH_RATIO;
-
-        (submenu_horizontal_overlap, submenu_top_offset)
+        self.calculate_submenu_offsets(first_menu_width, 0.0, theme_parent_index)
     }
 
     fn calculate_language_submenu_offsets(&self, first_menu_width: f32) -> (f32, f32) {
         let language_parent_index = self.settings_first_menu_index("language");
-        let menu_button_height = self.nested_menu_button_height();
-        let parent_item_x = Self::nested_menu_surface_padding();
-        let submenu_horizontal_overlap =
-            first_menu_width * (1.0 - MENU_HORIZONTAL_ATTACH_RATIO) - parent_item_x;
-        let submenu_top_offset = Self::nested_menu_surface_padding()
-            + language_parent_index as f32 * (menu_button_height + 1.0)
-            + menu_button_height * MENU_VERTICAL_ATTACH_RATIO;
-
-        (submenu_horizontal_overlap, submenu_top_offset)
+        self.calculate_submenu_offsets(first_menu_width, 0.0, language_parent_index)
     }
 
     fn calculate_font_submenu_offsets(&self, first_menu_width: f32) -> (f32, f32) {
         let font_parent_index = self.settings_first_menu_index("fonts");
-        let menu_button_height = self.nested_menu_button_height();
-        let parent_item_x = Self::nested_menu_surface_padding();
-        let submenu_horizontal_overlap =
-            first_menu_width * (1.0 - MENU_HORIZONTAL_ATTACH_RATIO) - parent_item_x;
-        let submenu_top_offset = Self::nested_menu_surface_padding()
-            + font_parent_index as f32 * (menu_button_height + 1.0)
-            + menu_button_height * MENU_VERTICAL_ATTACH_RATIO;
-
-        (submenu_horizontal_overlap, submenu_top_offset)
+        self.calculate_submenu_offsets(first_menu_width, 0.0, font_parent_index)
     }
 
     fn calculate_messages_submenu_offsets(&self, first_menu_width: f32) -> (f32, f32) {
         let messages_parent_index = self.settings_first_menu_index("messages");
-        let menu_button_height = self.nested_menu_button_height();
-        let parent_item_x = Self::nested_menu_surface_padding();
-        let submenu_horizontal_overlap =
-            first_menu_width * (1.0 - MENU_HORIZONTAL_ATTACH_RATIO) - parent_item_x;
-        let submenu_top_offset = Self::nested_menu_surface_padding()
-            + messages_parent_index as f32 * (menu_button_height + 1.0)
-            + menu_button_height * MENU_VERTICAL_ATTACH_RATIO;
-
-        (submenu_horizontal_overlap, submenu_top_offset)
+        self.calculate_submenu_offsets(first_menu_width, 0.0, messages_parent_index)
     }
 
     fn calculate_ai_models_submenu_offsets(&self, first_menu_width: f32) -> (f32, f32) {
         let ai_models_parent_index = self.settings_first_menu_index("ai_models");
-        let menu_button_height = self.nested_menu_button_height();
-        let parent_item_x = Self::nested_menu_surface_padding();
-        let submenu_horizontal_overlap =
-            first_menu_width * (1.0 - MENU_HORIZONTAL_ATTACH_RATIO) - parent_item_x;
-        let submenu_top_offset = Self::nested_menu_surface_padding()
-            + ai_models_parent_index as f32 * (menu_button_height + 1.0)
-            + menu_button_height * MENU_VERTICAL_ATTACH_RATIO;
-
-        (submenu_horizontal_overlap, submenu_top_offset)
+        self.calculate_submenu_offsets(first_menu_width, 0.0, ai_models_parent_index)
     }
 
     fn calculate_input_submenu_offsets(
@@ -3072,15 +3533,71 @@ impl App {
             .position(|item| item.label == input_parent_label)
             .unwrap_or(0);
         let menu_button_height = self.nested_menu_button_height();
-        let parent_item_x = Self::nested_menu_surface_padding();
+        self.calculate_submenu_offsets_with_height(
+            messages_menu_width,
+            messages_menu_top_offset,
+            input_parent_index,
+            menu_button_height,
+        )
+    }
+
+    fn calculate_submenu_offsets(
+        &self,
+        parent_menu_width: f32,
+        parent_menu_top_offset: f32,
+        parent_item_index: usize,
+    ) -> (f32, f32) {
+        self.calculate_submenu_offsets_with_height(
+            parent_menu_width,
+            parent_menu_top_offset,
+            parent_item_index,
+            self.nested_menu_button_height(),
+        )
+    }
+
+    fn calculate_submenu_offsets_with_height(
+        &self,
+        parent_menu_width: f32,
+        parent_menu_top_offset: f32,
+        parent_item_index: usize,
+        parent_item_height: f32,
+    ) -> (f32, f32) {
+        let surface_padding = Self::nested_menu_surface_padding();
         let submenu_horizontal_overlap =
-            messages_menu_width * (1.0 - MENU_HORIZONTAL_ATTACH_RATIO) - parent_item_x;
-        let submenu_top_offset = messages_menu_top_offset
-            + Self::nested_menu_surface_padding()
-            + input_parent_index as f32 * (menu_button_height + 1.0)
-            + menu_button_height * MENU_VERTICAL_ATTACH_RATIO;
+            parent_menu_width * (1.0 - MENU_HORIZONTAL_ATTACH_RATIO) - surface_padding;
+        let submenu_top_offset = self.calculate_menu_attach_top_offset(
+            parent_menu_top_offset,
+            parent_item_index,
+            parent_item_height,
+        );
 
         (submenu_horizontal_overlap, submenu_top_offset)
+    }
+
+    fn calculate_button_menu_offsets(&self, button_metrics: SettingsButtonMetrics) -> (f32, f32) {
+        let surface_padding = Self::nested_menu_surface_padding();
+        let horizontal_offset =
+            button_metrics.width * MENU_HORIZONTAL_ATTACH_RATIO + surface_padding;
+        let top_offset = self.calculate_menu_attach_top_offset(
+            button_metrics.top_offset,
+            0,
+            button_metrics.height,
+        );
+
+        (horizontal_offset, top_offset)
+    }
+
+    fn calculate_menu_attach_top_offset(
+        &self,
+        parent_top_offset: f32,
+        parent_item_index: usize,
+        parent_item_height: f32,
+    ) -> f32 {
+        let surface_padding = Self::nested_menu_surface_padding();
+        parent_top_offset
+            + surface_padding
+            + parent_item_index as f32 * (parent_item_height + 1.0)
+            + parent_item_height * MENU_VERTICAL_ATTACH_RATIO
     }
 
     fn calculate_menu_width(&self) -> f32 {
@@ -3600,10 +4117,21 @@ impl App {
             .font(text_binding.font())
             .style(iced::theme::Text::Color(primary_text))
             .width(Length::Fill);
-        let settings_metrics = self.calculate_settings_button_metrics(&settings_button_text);
-        let debug_metrics = self.calculate_settings_button_metrics(&debug_button_text);
+        let mut settings_metrics = self.calculate_settings_button_metrics(&settings_button_text);
+        let mut debug_metrics = self.calculate_settings_button_metrics(&debug_button_text);
         let server_one_button_text = self.localized_string_or("ui.button_server_one", "Сервер 1");
         let server_one_metrics = self.calculate_settings_button_metrics(&server_one_button_text);
+        let server_one_leds_height = 12.0;
+        let control_separator_height = 1.0 + CONTROL_SEPARATOR_VERTICAL_PADDING * 2.0;
+        let settings_controls_spacing = 5.0;
+        settings_metrics.top_offset = server_one_leds_height
+            + settings_controls_spacing
+            + server_one_metrics.height
+            + settings_controls_spacing
+            + control_separator_height
+            + settings_controls_spacing;
+        debug_metrics.top_offset =
+            settings_metrics.top_offset + settings_metrics.height + settings_controls_spacing;
 
         let settings_button = button(
             container(
@@ -3674,7 +4202,8 @@ impl App {
 
         let server_one_model_led_fill =
             Self::model_indicator_color(self.reasoning_model_indicator_state, colors);
-        let server_one_led_fill = colors.server_one_indicator_idle_fill.to_iced_color();
+        let server_one_led_fill =
+            Self::model_indicator_color(self.language_model_indicator_state, colors);
         let server_one_led_border = colors.server_one_indicator_border.to_iced_color();
         let server_one_led_one = container(text(""))
             .width(Length::Fixed(12.0))
@@ -3724,7 +4253,7 @@ impl App {
             settings_button,
             debug_button
         ]
-        .spacing(5)
+        .spacing(settings_controls_spacing)
         .width(Length::Fill)
         .into();
 
@@ -3931,7 +4460,7 @@ impl App {
         if let Some(scene) = self.settings_overlay_scene() {
             Some(self.render_settings_overlay_scene(scene, settings_metrics, colors))
         } else if self.overlay_menus.debug_menu.is_open() {
-            Some(self.render_debug_overlay_scene(settings_metrics, debug_metrics, colors))
+            Some(self.render_debug_overlay_scene(debug_metrics, colors))
         } else {
             None
         }
@@ -4034,11 +4563,10 @@ impl App {
             colors,
         );
         let menu_branch = self.render_settings_overlay_branch(first_menu, scene, colors);
-        let horizontal_offset = settings_metrics.width * MENU_HORIZONTAL_ATTACH_RATIO;
-        let overlap_y = settings_metrics.height * (1.0 - MENU_VERTICAL_ATTACH_RATIO);
+        let (horizontal_offset, top_offset) = self.calculate_button_menu_offsets(settings_metrics);
 
         container(menu_branch)
-            .padding([overlap_y, 0.0, 0.0, horizontal_offset])
+            .padding([top_offset, 0.0, 0.0, horizontal_offset])
             .width(Length::Shrink)
             .into()
     }
@@ -4073,16 +4601,12 @@ impl App {
 
     fn render_debug_overlay_scene<'a>(
         &'a self,
-        settings_metrics: SettingsButtonMetrics,
         debug_metrics: SettingsButtonMetrics,
         colors: &UiThemeColors,
     ) -> Element<'a, Message> {
         let menu_width = self.calculate_debug_menu_width();
         let debug_menu = self.render_debug_overlay_menu(menu_width, colors);
-        let horizontal_offset = debug_metrics.width * MENU_HORIZONTAL_ATTACH_RATIO;
-        let top_offset = settings_metrics.height
-            + 5.0
-            + debug_metrics.height * (1.0 - MENU_VERTICAL_ATTACH_RATIO);
+        let (horizontal_offset, top_offset) = self.calculate_button_menu_offsets(debug_metrics);
 
         container(debug_menu)
             .padding([top_offset, 0.0, 0.0, horizontal_offset])
@@ -4209,11 +4733,14 @@ impl Application for App {
             submit_shortcut: InputSubmitShortcut::Enter,
             server_one_status: ServerOneStatus::NotRunning,
             reasoning_model_indicator_state: ModelIndicatorState::Empty,
+            language_model_indicator_state: ModelIndicatorState::Empty,
+            last_reasoning_result: None,
         };
 
         app.logger.log_info("Application initialized");
         app.refresh_server_one_status_for_button();
         app.refresh_reasoning_model_indicator_state();
+        app.refresh_language_model_indicator_state();
         // Старт застосунку виконує той самий сценарій, що й кнопка запуску.
         orchestrator::launch_startup_test(&mut app.state, &mut app.logger);
         app.logger
@@ -4403,6 +4930,26 @@ impl Application for App {
                 }
                 if item == "debug.show_reasoning_readiness" {
                     self.show_reasoning_readiness();
+                    return self.scroll_dialogue_to_bottom();
+                }
+                if item == "debug.show_language_readiness" {
+                    self.show_language_readiness();
+                    return self.scroll_dialogue_to_bottom();
+                }
+                if item == "debug.show_real_language_request_preview" {
+                    self.show_real_language_request_preview();
+                    return self.scroll_dialogue_to_bottom();
+                }
+                if item == "debug.run_real_language_preview_test" {
+                    self.run_real_language_preview_test();
+                    return self.scroll_dialogue_to_bottom();
+                }
+                if item == "debug.compare_mock_vs_real_language_output" {
+                    self.compare_mock_vs_real_language_output();
+                    return self.scroll_dialogue_to_bottom();
+                }
+                if item == "debug.run_full_pipeline_with_real_language_preview" {
+                    self.run_full_pipeline_with_real_language_preview();
                     return self.scroll_dialogue_to_bottom();
                 }
                 if item == "debug.show_active_runtime_config" {
